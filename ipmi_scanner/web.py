@@ -121,6 +121,9 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                 return
             tmp = os.path.join(cfg.iso.dir, f".{name}.part")
             got = 0
+            t0 = time.monotonic()
+            log.info("Загрузка образа %s начата: %d байт от %s", name, length, self.address_string())
+            self.connection.settimeout(120)  # оборванная/зависшая загрузка не держит поток вечно
             try:
                 with open(tmp, "wb") as f:
                     while got < length:
@@ -138,9 +141,10 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                 except OSError:
                     pass
                 self.close_connection = True
+                log.warning("Загрузка образа %s не завершена (%d из %d байт): %s", name, got, length, e)
                 self._json({"ok": False, "message": f"Не удалось сохранить: {e}"}, 500)
                 return
-            log.info("Загружен образ %s (%d байт)", name, length)
+            log.info("Загружен образ %s (%d байт) за %.1f с", name, length, time.monotonic() - t0)
             self._json({"ok": True, "file": {"name": name, "size": length}})
 
         def _creds(self, body: dict) -> None:

@@ -310,6 +310,7 @@ function uploadIso(f) {
     let r = {}; try { r = JSON.parse(xhr.responseText); } catch { }
     done(xhr.status === 200 ? `Загружено: ${name}. Ссылка готова в таблице ниже.` : (r.message || r.error || "Ошибка загрузки (HTTP " + xhr.status + ")"));
   };
+  xhr.upload.onload = () => { bar.removeAttribute("value"); msg.textContent = `Файл передан (${mb(f.size)}), жду подтверждения сервера…`; };
   xhr.onerror = () => done("Загрузка прервана (сеть или лимит размера)");
   xhr.send(f);
 }
