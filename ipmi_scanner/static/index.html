@@ -42,6 +42,15 @@
   a { color: var(--accent); text-decoration: none; }
   .note { border: none; background: transparent; color: var(--text); font: inherit; width: 100%; min-width: 120px; padding: 2px 0; }
   .note:focus { outline: 1px solid var(--line); background: var(--bg); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; width: min(680px, 94vw); padding: 18px; }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog h2 { font-size: 16px; margin: 0 0 12px; }
+  .dlg-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .dlg-form input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; min-width: 0; }
+  .dlg-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .kv { width: 100%; margin-bottom: 10px; } .kv td { padding: 4px 8px 4px 0; white-space: normal; border: none; } .kv td:first-child { color: var(--muted); width: 38%; }
+  .sensors { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
+  button.sm { padding: 3px 10px; font-size: 13px; }
   #msg { min-height: 1.4em; margin-top: 8px; }
   .del { background: none; border: none; color: var(--muted); padding: 0 4px; cursor: pointer; }
   .del:hover { color: var(--bad); }
@@ -58,6 +67,7 @@
     <div class="row">
       <input type="text" id="targets" placeholder="Сети для скана: 10.0.0.0/24 192.168.1.10-50 (пусто — сети из конфига)">
       <button id="scanBtn">Сканировать</button>
+      <button class="ghost" id="collectAllBtn" title="Войти во все BMC с сохранёнными (или стандартными) логином и паролем — по одной попытке">Собрать данные</button>
       <button class="ghost" id="exportBtn" title="Скопировать список в CSV">CSV</button>
     </div>
     <div id="msg" class="muted"></div>
@@ -70,9 +80,9 @@
       <thead><tr>
         <th data-k="ip">IP</th><th data-k="mac">MAC</th><th data-k="vendor">Производитель</th>
         <th data-k="product">Модель</th><th>IPMI</th><th>Аутентификация</th><th>Redfish</th>
-        <th>Предупреждения</th><th data-k="last_seen">Последний раз</th><th>Заметка</th><th></th>
+        <th>Предупреждения</th><th>BMC</th><th data-k="last_seen">Последний раз</th><th>Заметка</th><th></th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="11" class="muted">Загрузка…</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="12" class="muted">Загрузка…</td></tr></tbody>
     </table>
   </div>
 
@@ -83,10 +93,26 @@
   </div>
 </div>
 
+<dialog id="dlg">
+  <h2 id="dlgTitle"></h2>
+  <div class="dlg-form">
+    <input id="dlgUser" type="text" placeholder="логин BMC" autocomplete="off" spellcheck="false">
+    <input id="dlgPass" type="password" placeholder="пароль" autocomplete="new-password">
+  </div>
+  <div class="dlg-actions">
+    <button id="dlgGo">Сохранить и собрать</button>
+    <button class="ghost" id="dlgForget">Забыть логин</button>
+    <button class="ghost" id="dlgClose">Закрыть</button>
+  </div>
+  <div id="dlgMsg" class="muted" style="min-height:1.4em"></div>
+  <div id="dlgInfo"></div>
+</dialog>
+
 <script>
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = t => t ? new Date(t * 1000).toLocaleString("ru-RU") : "—";
+let collecting = [], defaultCreds = false, dlgIp = null;
 let hosts = [], sortKey = "ip", sortDir = 1, wasRunning = false;
 
 const ipNum = ip => ip.split(".").reduce((a, b) => a * 256 + +b, 0);
@@ -126,11 +152,12 @@ function render() {
       <td>${authCell(i)}</td>
       <td>${rf ? esc(rf.version || "да") : '<span class="muted">—</span>'}</td>
       <td class="wrapc">${h.warnings.length ? h.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join("") : '<span class="muted">—</span>'}</td>
+      <td><button class="ghost sm bmcbtn" data-ip="${esc(h.ip)}">${collecting.includes(h.ip) ? "…" : h.info ? esc(h.info.system?.power_state || "данные") : (h.has_creds || defaultCreds) ? "собрать" : "войти"}</button>${h.info_error ? '<div class="bad" style="font-size:12px" title="' + esc(h.info_error) + '">ошибка</div>' : ""}</td>
       <td title="Впервые: ${esc(fmt(h.first_seen))}">${esc(fmt(h.last_seen))}</td>
       <td><input class="note" data-ip="${esc(h.ip)}" value="${esc(h.note)}" placeholder="…"></td>
       <td><button class="del" data-ip="${esc(h.ip)}" title="Удалить из списка">✕</button></td>
     </tr>`;
-  }).join("") : '<tr><td colspan="11" class="muted">Пока ничего не найдено. Запустите скан.</td></tr>';
+  }).join("") : '<tr><td colspan="12" class="muted">Пока ничего не найдено. Запустите скан.</td></tr>';
 
   const online = hosts.filter(h => h.online).length;
   const warn = hosts.filter(h => h.warnings.length).length;
@@ -146,7 +173,8 @@ function render() {
 async function refresh() {
   const [st, h, sc] = await Promise.all([api("/api/status"), api("/api/hosts"), api("/api/scans")]);
   hosts = Array.isArray(h) ? h : [];
-  render();
+  collecting = st.collecting || []; defaultCreds = !!st.default_creds;
+  render(); renderDlg();
   const r = st.running;
   $("#scanBtn").disabled = !!r;
   $("#status").textContent = r
@@ -162,6 +190,52 @@ async function refresh() {
     <td>${s.found ?? "—"}</td><td>${s.new ?? "—"}</td>
     <td class="bad">${esc(s.error || "")}</td></tr>`).join("");
 }
+
+function renderDlg() {
+  if (!dlgIp) return;
+  const h = hosts.find(x => x.ip === dlgIp); if (!h) return;
+  let html = "";
+  if (h.info_error) html += `<div class="bad" style="margin-bottom:8px">${esc(h.info_error)}</div>`;
+  if (collecting.includes(dlgIp)) html += '<div class="muted">Собираю данные…</div>';
+  const i = h.info;
+  if (i) {
+    const s = i.system || {}, b = i.bmc || {};
+    const rows = [["Производитель", s.manufacturer], ["Модель", s.model], ["Серийный номер", s.serial], ["Партномер", s.part_number],
+      ["Имя хоста", s.hostname], ["Питание", s.power_state], ["Состояние", s.health], ["Прошивка BMC", b.firmware], ["BIOS", s.bios_version],
+      ["Процессоры", s.cpu_count ? s.cpu_count + " × " + (s.cpu_model || "") : null], ["Память", s.memory_gib ? s.memory_gib + " ГиБ" : null],
+      ["Потребление", i.power_watts != null ? i.power_watts + " Вт" : null]].filter(r => r[1] != null && r[1] !== "");
+    html += '<table class="kv">' + rows.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("") + "</table>";
+    if (i.sensors && i.sensors.length) html += '<div class="muted" style="margin-bottom:4px">Датчики</div><div class="sensors">' +
+      i.sensors.map(x => `<span class="chip ${x.status && !["ok", "OK"].includes(x.status) ? "warn" : ""}">${esc(x.name)}: ${esc(x.value)} ${esc(x.unit)}</span>`).join("") + "</div>";
+    html += `<div class="muted" style="margin-top:8px;font-size:12px">Источник: ${esc(i.source)}, ${esc(fmt(h.info_at))}</div>`;
+  }
+  $("#dlgInfo").innerHTML = html;
+}
+function openDlg(ip) {
+  const h = hosts.find(x => x.ip === ip); if (!h) return;
+  dlgIp = ip;
+  $("#dlgTitle").textContent = "BMC " + ip;
+  $("#dlgUser").value = h.bmc_user || "";
+  $("#dlgPass").value = "";
+  $("#dlgPass").placeholder = h.has_creds ? "сохранён — оставьте пустым" : (defaultCreds ? "пусто — стандартный" : "пароль");
+  $("#dlgMsg").textContent = "";
+  renderDlg(); $("#dlg").showModal();
+}
+$("#dlgGo").onclick = async () => {
+  const user = $("#dlgUser").value.trim();
+  if (user) {
+    const r = await api("/api/creds", { ip: dlgIp, username: user, password: $("#dlgPass").value });
+    if (!r.ok) { $("#dlgMsg").textContent = r.message || "Ошибка"; return; }
+    $("#dlgPass").value = "";
+  }
+  const r = await api("/api/collect", { ip: dlgIp });
+  $("#dlgMsg").textContent = r.message || ""; refresh();
+};
+$("#dlgForget").onclick = async () => { await api("/api/creds", { ip: dlgIp, clear: true }); $("#dlgUser").value = ""; $("#dlgMsg").textContent = "Логин удалён"; refresh(); };
+$("#dlgClose").onclick = () => $("#dlg").close();
+$("#dlg").addEventListener("close", () => { dlgIp = null; $("#dlgPass").value = ""; });
+$("#collectAllBtn").onclick = async () => { const r = await api("/api/collect", { all: true }); $("#msg").textContent = r.message || ""; refresh(); };
+$("#rows").addEventListener("click", e => { const b = e.target.closest(".bmcbtn"); if (b) openDlg(b.dataset.ip); });
 
 $("#scanBtn").onclick = async () => {
   const t = $("#targets").value.trim();

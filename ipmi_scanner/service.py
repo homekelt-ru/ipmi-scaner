@@ -5,7 +5,9 @@ import logging
 import threading
 import time
 
-from . import scanner
+from concurrent.futures import ThreadPoolExecutor
+
+from . import bmc, scanner
 from .config import Config
 from .storage import Storage
 
@@ -20,6 +22,51 @@ class ScanService:
         self.running: dict | None = None
         self.next_run: float | None = None
         self._stop = threading.Event()
+        self._clock = threading.Lock()
+        self._collecting: set[str] = set()
+
+    @property
+    def collecting(self) -> list[str]:
+        with self._clock:
+            return sorted(self._collecting)
+
+    def has_default_creds(self) -> bool:
+        return bool(self.cfg.bmc.username and self.cfg.bmc.password)
+
+    def collect_async(self, ips: list[str]) -> tuple[bool, str]:
+        """Сбор данных с BMC в фоне: по одной попытке входа на каждый."""
+        with self._clock:
+            ips = [ip for ip in ips if ip not in self._collecting]
+            if not ips:
+                return False, "Сбор данных уже выполняется"
+            self._collecting.update(ips)
+        threading.Thread(target=self._collect_many, args=(ips,), daemon=True).start()
+        return True, f"Сбор данных: {len(ips)} BMC"
+
+    def _collect_many(self, ips: list[str]) -> None:
+        workers = max(1, min(self.cfg.bmc.max_parallel, len(ips)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(self._collect_one, ips))
+
+    def _collect_one(self, ip: str) -> None:
+        try:
+            creds = self.storage.get_creds(ip)
+            if not creds and self.has_default_creds():
+                creds = (self.cfg.bmc.username, self.cfg.bmc.password)
+            if not creds:
+                self.storage.set_info(ip, None, "Не заданы логин и пароль")
+                return
+            res = bmc.collect(ip, creds[0], creds[1], timeout=self.cfg.bmc.timeout)
+            if "error" in res:
+                self.storage.set_info(ip, None, res["error"])
+            else:
+                self.storage.set_info(ip, res, None)
+        except Exception as e:
+            log.exception("Сбор данных с %s", ip)
+            self.storage.set_info(ip, None, f"Внутренняя ошибка: {type(e).__name__}")
+        finally:
+            with self._clock:
+                self._collecting.discard(ip)
 
     def start_async(self, targets: list[str] | None = None) -> tuple[bool, str]:
         targets = targets or self.cfg.scan.networks

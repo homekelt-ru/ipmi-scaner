@@ -9,7 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     IPMI_WEB_LISTEN=0.0.0.0 \
     IPMI_WEB_PORT=8623
 
-RUN useradd --system --uid 10623 --home-dir /app --shell /usr/sbin/nologin scanner \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ipmitool \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10623 --home-dir /app --shell /usr/sbin/nologin scanner \
  && mkdir -p /data && chown scanner /data
 
 WORKDIR /app

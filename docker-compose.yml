@@ -1,6 +1,8 @@
 services:
   ipmi-scanner:
-    build: .
+    build:
+      context: .
+      network: host   # сборке нужен интернет (apt), даже если у Docker отключён iptables
     image: ipmi-scanner:latest
     container_name: ipmi-scanner
     restart: unless-stopped

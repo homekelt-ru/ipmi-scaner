@@ -76,6 +76,36 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                 return None
             return data if isinstance(data, dict) else None
 
+        def _creds(self, body: dict) -> None:
+            ip = str(body.get("ip", ""))
+            if body.get("clear"):
+                storage.delete_creds(ip)
+                self._json({"ok": True})
+                return
+            user, pwd = body.get("username"), body.get("password")
+            if not isinstance(user, str) or not user.strip() or len(user) > 128 \
+                    or (pwd is not None and (not isinstance(pwd, str) or len(pwd) > 256)):
+                self._json({"ok": False, "message": "Некорректный логин или пароль"}, 400)
+                return
+            err = storage.set_creds(ip, user.strip(), pwd)
+            self._json({"ok": err is None, "message": err or "Сохранено"}, 200 if err is None else 400)
+
+        def _collect(self, body: dict) -> None:
+            if body.get("all"):
+                ips = [h["ip"] for h in storage.hosts()
+                       if h["online"] and (h["has_creds"] or service.has_default_creds())]
+                if not ips:
+                    self._json({"ok": False, "message": "Нет BMC с заданными логином и паролем"}, 409)
+                    return
+            else:
+                ip = str(body.get("ip", ""))
+                if not storage.host_exists(ip):
+                    self._json({"ok": False, "message": "Хост не найден"}, 404)
+                    return
+                ips = [ip]
+            ok, msg = service.collect_async(ips)
+            self._json({"ok": ok, "message": msg}, 200 if ok else 409)
+
         # --- routes ---
         def do_GET(self):
             if not self._guard():
@@ -94,6 +124,8 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                     "networks": cfg.scan.networks,
                     "interval_minutes": cfg.scan.interval_minutes,
                     "now": time.time(),
+                    "collecting": service.collecting,
+                    "default_creds": service.has_default_creds(),
                 })
             else:
                 self._json({"error": "not found"}, 404)
@@ -118,6 +150,15 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
             elif path == "/api/note":
                 ok = storage.set_note(str(body.get("ip", "")), str(body.get("note", "")))
                 self._json({"ok": ok}, 200 if ok else 404)
+            elif path in ("/api/creds", "/api/collect"):
+                # без пароля панели принимать пароли BMC можно только на loopback
+                if not cfg.web.password and cfg.web.listen not in ("127.0.0.1", "localhost", "::1"):
+                    self._json({"error": "Вход в BMC отключён: задайте пароль панели (web.password)"}, 403)
+                    return
+                if path == "/api/creds":
+                    self._creds(body)
+                else:
+                    self._collect(body)
             elif path == "/api/delete":
                 ok = storage.delete_host(str(body.get("ip", "")))
                 self._json({"ok": ok}, 200 if ok else 404)

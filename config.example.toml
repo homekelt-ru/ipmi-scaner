@@ -24,3 +24,10 @@ password = ""
 
 [storage]
 database = "./data/ipmi.db"
+
+[bmc]
+# Учётные данные по умолчанию для BMC без собственных (задаются в панели). Пусто — только свои.
+username = ""
+password = ""
+timeout = 15.0
+max_parallel = 8

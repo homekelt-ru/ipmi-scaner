@@ -25,9 +25,19 @@ class WebConfig:
 
 
 @dataclass
+class BmcConfig:
+    # учётные данные по умолчанию для BMC, у которых нет своих
+    username: str = ""
+    password: str = ""
+    timeout: float = 15.0
+    max_parallel: int = 8
+
+
+@dataclass
 class Config:
     scan: ScanConfig = field(default_factory=ScanConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    bmc: BmcConfig = field(default_factory=BmcConfig)
     database: str = "./data/ipmi.db"
 
 
@@ -44,6 +54,10 @@ _ENV = {
     "IPMI_WEB_USERNAME": ("web", "username", str),
     "IPMI_WEB_PASSWORD": ("web", "password", str),
     "IPMI_DATABASE": (None, "database", str),
+    "IPMI_BMC_USERNAME": ("bmc", "username", str),
+    "IPMI_BMC_PASSWORD": ("bmc", "password", str),
+    "IPMI_BMC_TIMEOUT": ("bmc", "timeout", float),
+    "IPMI_BMC_MAX_PARALLEL": ("bmc", "max_parallel", int),
 }
 
 
@@ -58,6 +72,9 @@ def load(path: str | None) -> Config:
         for k, v in raw.get("web", {}).items():
             if hasattr(cfg.web, k):
                 setattr(cfg.web, k, v)
+        for k, v in raw.get("bmc", {}).items():
+            if hasattr(cfg.bmc, k):
+                setattr(cfg.bmc, k, v)
         cfg.database = raw.get("storage", {}).get("database", cfg.database)
     for env, (section, key, conv) in _ENV.items():
         val = os.environ.get(env)

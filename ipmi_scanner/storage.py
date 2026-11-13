@@ -31,7 +31,19 @@ CREATE TABLE IF NOT EXISTS scans (
     new       INTEGER,
     error     TEXT
 );
+CREATE TABLE IF NOT EXISTS creds (
+    ip        TEXT PRIMARY KEY,
+    username  TEXT NOT NULL,
+    password  TEXT NOT NULL
+);
 """
+
+
+def _ip_key(ip: str) -> tuple:
+    try:
+        return (0, tuple(int(x) for x in ip.split(".")))
+    except ValueError:
+        return (1, (ip,))
 
 
 class Storage:
@@ -42,7 +54,15 @@ class Storage:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(hosts)")}
+        for name, ddl in (("info", "TEXT"), ("info_at", "REAL"), ("info_error", "TEXT")):
+            if name not in cols:
+                self.db.execute(f"ALTER TABLE hosts ADD COLUMN {name} {ddl}")
         self.db.commit()
+        try:  # в базе лежат пароли BMC
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def start_scan(self, targets: list[str]) -> int:
         with self._lock:
@@ -86,14 +106,19 @@ class Storage:
 
     def hosts(self) -> list[dict]:
         with self._lock:
-            rows = self.db.execute("SELECT * FROM hosts").fetchall()
+            rows = self.db.execute(
+                """SELECT h.*, c.username AS bmc_user, (c.ip IS NOT NULL) AS has_creds
+                   FROM hosts h LEFT JOIN creds c ON c.ip = h.ip"""
+            ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
             d["data"] = json.loads(d["data"])
             d["warnings"] = json.loads(d["warnings"])
+            d["info"] = json.loads(d["info"]) if d["info"] else None
+            d["has_creds"] = bool(d["has_creds"])
             out.append(d)
-        out.sort(key=lambda h: tuple(int(x) for x in h["ip"].split(".")))
+        out.sort(key=lambda h: _ip_key(h["ip"]))
         return out
 
     def set_note(self, ip: str, note: str) -> bool:
@@ -104,9 +129,54 @@ class Storage:
 
     def delete_host(self, ip: str) -> bool:
         with self._lock:
+            self.db.execute("DELETE FROM creds WHERE ip=?", (ip,))
             cur = self.db.execute("DELETE FROM hosts WHERE ip=?", (ip,))
             self.db.commit()
             return cur.rowcount > 0
+
+    def host_exists(self, ip: str) -> bool:
+        with self._lock:
+            return self.db.execute("SELECT 1 FROM hosts WHERE ip=?", (ip,)).fetchone() is not None
+
+    def set_creds(self, ip: str, username: str, password: str | None) -> str | None:
+        """Сохраняет логин/пароль. password=None или "" — оставить прежний пароль.
+        Возвращает текст ошибки или None."""
+        with self._lock:
+            if not self.db.execute("SELECT 1 FROM hosts WHERE ip=?", (ip,)).fetchone():
+                return "Хост не найден"
+            if not password:
+                row = self.db.execute("SELECT password FROM creds WHERE ip=?", (ip,)).fetchone()
+                if not row:
+                    return "Укажите пароль"
+                password = row["password"]
+            self.db.execute(
+                "INSERT INTO creds (ip, username, password) VALUES (?, ?, ?) "
+                "ON CONFLICT(ip) DO UPDATE SET username=excluded.username, password=excluded.password",
+                (ip, username, password),
+            )
+            self.db.commit()
+        return None
+
+    def delete_creds(self, ip: str) -> None:
+        with self._lock:
+            self.db.execute("DELETE FROM creds WHERE ip=?", (ip,))
+            self.db.commit()
+
+    def get_creds(self, ip: str) -> tuple[str, str] | None:
+        with self._lock:
+            row = self.db.execute("SELECT username, password FROM creds WHERE ip=?", (ip,)).fetchone()
+        return (row["username"], row["password"]) if row else None
+
+    def set_info(self, ip: str, info: dict | None, error: str | None) -> None:
+        with self._lock:
+            if error:
+                self.db.execute("UPDATE hosts SET info_error=? WHERE ip=?", (error, ip))
+            else:
+                self.db.execute(
+                    "UPDATE hosts SET info=?, info_at=?, info_error=NULL WHERE ip=?",
+                    (json.dumps(info, ensure_ascii=False), time.time(), ip),
+                )
+            self.db.commit()
 
     def scans(self, limit: int = 20) -> list[dict]:
         with self._lock:
