@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPMI Scanner</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --accent: #2563eb; --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --chip: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1a1f27; --text: #e5e7eb; --muted: #9aa3b2; --line: #2a313c;
+      --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --chip: #232a35; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 24px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input[type=text] { flex: 1 1 320px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  button { padding: 8px 14px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .stats { display: flex; flex-wrap: wrap; gap: 24px; }
+  .stat b { font-size: 22px; display: block; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; cursor: pointer; user-select: none; }
+  td.wrapc { white-space: normal; min-width: 180px; }
+  tr.offline td { opacity: .55; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--ok); }
+  tr.offline .dot { background: var(--muted); }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; background: var(--chip); font-size: 12px; margin: 1px 2px 1px 0; }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  a { color: var(--accent); text-decoration: none; }
+  .note { border: none; background: transparent; color: var(--text); font: inherit; width: 100%; min-width: 120px; padding: 2px 0; }
+  .note:focus { outline: 1px solid var(--line); background: var(--bg); }
+  #msg { min-height: 1.4em; margin-top: 8px; }
+  .del { background: none; border: none; color: var(--muted); padding: 0 4px; cursor: pointer; }
+  .del:hover { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>IPMI Scanner</h1>
+    <span class="muted" id="status">…</span>
+  </header>
+
+  <div class="panel">
+    <div class="row">
+      <input type="text" id="targets" placeholder="Сети для скана: 10.0.0.0/24 192.168.1.10-50 (пусто — сети из конфига)">
+      <button id="scanBtn">Сканировать</button>
+      <button class="ghost" id="exportBtn" title="Скопировать список в CSV">CSV</button>
+    </div>
+    <div id="msg" class="muted"></div>
+  </div>
+
+  <div class="panel stats" id="stats"></div>
+
+  <div class="panel table-wrap">
+    <table>
+      <thead><tr>
+        <th data-k="ip">IP</th><th data-k="mac">MAC</th><th data-k="vendor">Производитель</th>
+        <th data-k="product">Модель</th><th>IPMI</th><th>Аутентификация</th><th>Redfish</th>
+        <th>Предупреждения</th><th data-k="last_seen">Последний раз</th><th>Заметка</th><th></th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="11" class="muted">Загрузка…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel table-wrap">
+    <div class="muted" style="margin-bottom:6px">Последние сканы</div>
+    <table><thead><tr><th>Начат</th><th>Длительность</th><th>Цели</th><th>Найдено</th><th>Новых</th><th>Ошибка</th></tr></thead>
+    <tbody id="scans"></tbody></table>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = t => t ? new Date(t * 1000).toLocaleString("ru-RU") : "—";
+let hosts = [], sortKey = "ip", sortDir = 1, wasRunning = false;
+
+const ipNum = ip => ip.split(".").reduce((a, b) => a * 256 + +b, 0);
+
+async function api(path, body) {
+  const opt = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok && !data.message) data.message = data.error || ("HTTP " + r.status);
+  return data;
+}
+
+function authCell(i) {
+  if (!i) return '<span class="muted">—</span>';
+  if (i.completion_code) return `<span class="muted">код 0x${i.completion_code.toString(16)}</span>`;
+  const m = [];
+  if (i.auth_none) m.push("NONE"); if (i.auth_md2) m.push("MD2"); if (i.auth_md5) m.push("MD5");
+  if (i.auth_password) m.push("PASSWORD"); if (i.auth_oem) m.push("OEM");
+  return m.map(x => `<span class="chip">${x}</span>`).join("") || '<span class="muted">RMCP+</span>';
+}
+
+function render() {
+  const sorted = [...hosts].sort((a, b) => {
+    let x = a[sortKey], y = b[sortKey];
+    if (sortKey === "ip") { x = ipNum(x); y = ipNum(y); }
+    return (x ?? "") > (y ?? "") ? sortDir : (x ?? "") < (y ?? "") ? -sortDir : 0;
+  });
+  $("#rows").innerHTML = sorted.length ? sorted.map(h => {
+    const i = h.data.ipmi, rf = h.data.redfish;
+    const ver = i && !i.completion_code ? [i.ipmi_v15 && "1.5", i.ipmi_v2 && "2.0"].filter(Boolean).join(" / ") : (i ? "?" : "ASF");
+    return `<tr class="${h.online ? "" : "offline"}">
+      <td class="mono"><span class="dot" title="${h.online ? "в сети" : "не ответил в последнем скане"}"></span><a href="https://${esc(h.ip)}/" target="_blank" rel="noopener">${esc(h.ip)}</a></td>
+      <td class="mono">${esc(h.mac || "—")}</td>
+      <td>${esc(h.vendor || "—")}</td>
+      <td>${esc(h.product || "—")}</td>
+      <td>${esc(ver)}</td>
+      <td>${authCell(i)}</td>
+      <td>${rf ? esc(rf.version || "да") : '<span class="muted">—</span>'}</td>
+      <td class="wrapc">${h.warnings.length ? h.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join("") : '<span class="muted">—</span>'}</td>
+      <td title="Впервые: ${esc(fmt(h.first_seen))}">${esc(fmt(h.last_seen))}</td>
+      <td><input class="note" data-ip="${esc(h.ip)}" value="${esc(h.note)}" placeholder="…"></td>
+      <td><button class="del" data-ip="${esc(h.ip)}" title="Удалить из списка">✕</button></td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="11" class="muted">Пока ничего не найдено. Запустите скан.</td></tr>';
+
+  const online = hosts.filter(h => h.online).length;
+  const warn = hosts.filter(h => h.warnings.length).length;
+  const vendors = {};
+  hosts.forEach(h => vendors[h.vendor || "неизвестно"] = (vendors[h.vendor || "неизвестно"] || 0) + 1);
+  $("#stats").innerHTML =
+    `<div class="stat"><b>${hosts.length}</b><span class="muted">всего BMC</span></div>
+     <div class="stat"><b>${online}</b><span class="muted">в сети</span></div>
+     <div class="stat"><b class="${warn ? "warn" : ""}">${warn}</b><span class="muted">с предупреждениями</span></div>
+     <div class="stat"><span class="muted">По производителям:</span><div>${Object.entries(vendors).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span class="chip">${esc(k)}: ${v}</span>`).join("")}</div></div>`;
+}
+
+async function refresh() {
+  const [st, h, sc] = await Promise.all([api("/api/status"), api("/api/hosts"), api("/api/scans")]);
+  hosts = Array.isArray(h) ? h : [];
+  render();
+  const r = st.running;
+  $("#scanBtn").disabled = !!r;
+  $("#status").textContent = r
+    ? `Идёт скан ${r.count} адресов (${Math.round(st.now - r.started)} с)…`
+    : (st.next_run ? `Следующий плановый скан: ${fmt(st.next_run)}` : "Плановое сканирование выключено");
+  if (st.networks && st.networks.length) $("#targets").placeholder = "Пусто — сети из конфига: " + st.networks.join(" ");
+  if (wasRunning && !r) $("#msg").textContent = "Скан завершён.";
+  wasRunning = !!r;
+  $("#scans").innerHTML = (Array.isArray(sc) ? sc : []).map(s => `<tr>
+    <td>${esc(fmt(s.started))}</td>
+    <td>${s.finished ? (s.finished - s.started).toFixed(1) + " с" : "…"}</td>
+    <td class="mono wrapc">${esc(s.targets.join(" "))}</td>
+    <td>${s.found ?? "—"}</td><td>${s.new ?? "—"}</td>
+    <td class="bad">${esc(s.error || "")}</td></tr>`).join("");
+}
+
+$("#scanBtn").onclick = async () => {
+  const t = $("#targets").value.trim();
+  const r = await api("/api/scan", { targets: t || null });
+  $("#msg").textContent = r.message || "";
+  refresh();
+};
+$("#rows").addEventListener("change", e => {
+  if (e.target.classList.contains("note")) api("/api/note", { ip: e.target.dataset.ip, note: e.target.value });
+});
+$("#rows").addEventListener("click", async e => {
+  const b = e.target.closest(".del");
+  if (!b) return;
+  if (b.dataset.armed) { await api("/api/delete", { ip: b.dataset.ip }); refresh(); }
+  else { b.dataset.armed = 1; b.textContent = "удалить?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "✕"; }, 3000); }
+});
+document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
+  const k = th.dataset.k; sortDir = sortKey === k ? -sortDir : 1; sortKey = k; render();
+});
+$("#exportBtn").onclick = async () => {
+  const cols = ["ip", "mac", "vendor", "product", "online", "last_seen", "note"];
+  const csv = [cols.concat("warnings").join(",")].concat(hosts.map(h =>
+    cols.map(c => `"${String(c === "last_seen" ? fmt(h[c]) : h[c] ?? "").replace(/"/g, '""')}"`).concat(`"${h.warnings.join("; ")}"`).join(","))).join("\n");
+  try { await navigator.clipboard.writeText(csv); $("#msg").textContent = "CSV скопирован в буфер обмена."; }
+  catch { $("#msg").textContent = "Не удалось скопировать: используйте GET /api/hosts"; }
+};
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+# IPMI Scanner
+
+Сервис ищет в сети серверы с IPMI (BMC: iDRAC, iLO, IPMI Supermicro, XCC, iBMC и т.д.),
+хранит их список и показывает его в веб-панели.
+
+Без внешних зависимостей — нужен только Python 3.11+.
+
+## Как работает
+
+На каждый адрес по UDP/623 уходят два запроса, которые BMC обрабатывают **без логина**:
+
+| Запрос | Что даёт |
+|---|---|
+| IPMI *Get Channel Authentication Capabilities* | факт наличия BMC, версии IPMI (1.5 / 2.0), разрешённые методы аутентификации, анонимный вход |
+| ASF/RMCP *Presence Ping* | IANA-номер производителя (у части BMC) |
+
+Найденные BMC при включённом `redfish` дополнительно опрашиваются через `https://<ip>/redfish/v1/`:
+оттуда берутся производитель, модель и версия Redfish.
+
+Рассылка идёт через один UDP-сокет с ограничением скорости, поэтому сеть /16 сканируется
+примерно за минуту. Молчащие адреса переспрашиваются (`retries`). Старым BMC, которые
+поддерживают только IPMI 1.5, запрос автоматически повторяется в формате 1.5.
+
+Сервис также выдаёт предупреждения о небезопасных настройках: анонимный вход, пустые имена
+пользователей, аутентификация NONE / пароль открытым текстом / MD2, только IPMI 1.5.
+
+## Быстрый старт
+
+```bash
+# разовый скан
+python3 -m ipmi_scanner scan 192.168.1.0/24 10.10.0.1-50
+python3 -m ipmi_scanner scan 192.168.1.0/24 --redfish --json
+
+# сервис с веб-панелью и плановыми сканами
+cp config.example.toml config.toml   # укажите scan.networks
+python3 -m ipmi_scanner -c config.toml serve
+# панель: http://127.0.0.1:8623/  (снаружи — через ssh -L 8623:127.0.0.1:8623 host)
+
+# сохранённый список
+python3 -m ipmi_scanner -c config.toml list
+```
+
+## Docker
+
+```bash
+cp .env.example .env        # укажите IPMI_NETWORKS и пароль панели
+docker compose up -d --build
+docker compose logs -f
+
+# разовый скан из контейнера
+docker compose run --rm ipmi-scanner scan 192.168.1.0/24 --redfish
+```
+
+Контейнер запускается в режиме `network_mode: host`: так сканер видит все сети хоста и
+получает MAC-адреса BMC из ARP-таблицы. База хранится в volume `ipmi-data` (`/data/ipmi.db`).
+
+Все настройки задаются через переменные окружения из `.env.example`, они перекрывают
+`config.toml`. Чтобы открыть панель наружу, задайте `IPMI_WEB_LISTEN=0.0.0.0` и обязательно
+`IPMI_WEB_PASSWORD`.
+
+Пошаговая установка на сервер: [INSTALL-ALMALINUX.md](INSTALL-ALMALINUX.md).
+
+## Установка как systemd-сервиса
+
+```bash
+sudo ./deploy/install.sh
+sudo nano /etc/ipmi-scanner/config.toml   # сети, пароль панели
+sudo systemctl restart ipmi-scanner
+journalctl -u ipmi-scanner -f
+```
+
+## API
+
+Если задан `web.password`, все запросы требуют Basic Auth. POST-запросы принимают только `application/json`.
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/api/hosts` | все найденные BMC |
+| GET | `/api/scans` | последние сканы |
+| GET | `/api/status` | идёт ли скан, время следующего планового |
+| POST | `/api/scan` | `{"targets": ["10.0.0.0/24"]}` или `{}` — сети из конфига |
+| POST | `/api/note` | `{"ip": "...", "note": "..."}` |
+| POST | `/api/delete` | `{"ip": "..."}` |
+
+## Тесты
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Тесты используют эмулятор BMC ([tests/fake_bmc.py](tests/fake_bmc.py)), реальное железо не нужно.
+
+## Ограничения
+
+- Только IPv4.
+- MAC-адрес виден только для BMC в одном L2-сегменте со сканером (берётся из ARP-таблицы).
+- Сканировать можно только сети, на которые у вас есть права.

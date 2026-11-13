@@ -1,0 +1,18 @@
+services:
+  ipmi-scanner:
+    build: .
+    image: ipmi-scanner:latest
+    container_name: ipmi-scanner
+    restart: unless-stopped
+    # host-сеть: сканер видит сети хоста напрямую и получает MAC-адреса из ARP.
+    # Порт панели в этом режиме — IPMI_WEB_PORT на интерфейсе IPMI_WEB_LISTEN хоста.
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ipmi-data:/data
+      # опционально — полный конфиг вместо переменных окружения:
+      # - ./config.toml:/app/config.toml:ro
+    # command: ["-c", "/app/config.toml", "serve"]
+
+volumes:
+  ipmi-data:

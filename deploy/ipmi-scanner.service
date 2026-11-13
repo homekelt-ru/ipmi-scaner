@@ -1,0 +1,23 @@
+[Unit]
+Description=IPMI Scanner — поиск BMC в сети
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ipmi-scanner
+Group=ipmi-scanner
+WorkingDirectory=/opt/ipmi-scanner
+ExecStart=/usr/bin/python3 -m ipmi_scanner -c /etc/ipmi-scanner/config.toml serve
+Restart=on-failure
+RestartSec=5
+StateDirectory=ipmi-scanner
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/ipmi-scanner
+
+[Install]
+WantedBy=multi-user.target
