@@ -22,7 +22,7 @@ docker --version && docker compose version
 Публичный репозиторий клонируется напрямую:
 
 ```bash
-git clone https://github.com/homekelt-ru/ipmi-scanner.git /opt/ipmi-scanner
+git clone https://github.com/homekelt-ru/ipmi-scaner.git /opt/ipmi-scanner
 ```
 
 Для приватного репозитория нужен deploy key (доступ только на чтение к одному репозиторию):
@@ -40,7 +40,7 @@ Host github-ipmi
     IdentitiesOnly yes
 EOF
 
-git clone git@github-ipmi:homekelt-ru/ipmi-scanner.git /opt/ipmi-scanner
+git clone git@github-ipmi:homekelt-ru/ipmi-scaner.git /opt/ipmi-scanner
 ```
 
 ## 3. Настройка
