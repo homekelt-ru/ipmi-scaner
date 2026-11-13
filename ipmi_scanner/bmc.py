@@ -91,6 +91,25 @@ def _first_member(get, path: str) -> dict:
     return {}
 
 
+def _members(get, path: str | None, limit: int) -> list[dict]:
+    """Элементы коллекции Redfish (процессоры, модули памяти), не больше limit штук."""
+    if not path:
+        return []
+    out = []
+    try:
+        for m in (get(path).get("Members") or [])[:limit]:
+            p = m.get("@odata.id") if isinstance(m, dict) else None
+            if p:
+                out.append(get(p))
+    except Unavailable:
+        pass
+    return out
+
+
+def _present(d: dict) -> bool:
+    return (d.get("Status") or {}).get("State") != "Absent"
+
+
 def _best_effort(fn):
     try:
         return fn()
@@ -113,6 +132,17 @@ def collect_redfish(host: str, username: str, password: str, timeout: float, get
 
     ps = s.get("ProcessorSummary") or {}
     ms = s.get("MemorySummary") or {}
+    cpu_count, cpu_model, mem_gib = ps.get("Count"), ps.get("Model"), ms.get("TotalSystemMemoryGiB")
+    if not cpu_count or not cpu_model:  # сводки нет — считаем по отдельным процессорам
+        cpus = [p for p in _members(get, _link(s, "Processors"), 16)
+                if _present(p) and p.get("ProcessorType") in (None, "CPU")]
+        if cpus:
+            cpu_count = len(cpus)
+            cpu_model = cpus[0].get("Model") or cpus[0].get("Name")
+    if not mem_gib:  # то же для памяти — суммируем модули
+        mib = sum(d.get("CapacityMiB") or 0 for d in _members(get, _link(s, "Memory"), 64) if _present(d))
+        if mib:
+            mem_gib = round(mib / 1024, 1)
     system = {
         "manufacturer": s.get("Manufacturer"),
         "model": s.get("Model"),
@@ -122,9 +152,11 @@ def collect_redfish(host: str, username: str, password: str, timeout: float, get
         "power_state": s.get("PowerState"),
         "health": (s.get("Status") or {}).get("Health"),
         "bios_version": s.get("BiosVersion"),
-        "cpu_count": ps.get("Count"),
-        "cpu_model": ps.get("Model"),
-        "memory_gib": ms.get("TotalSystemMemoryGiB"),
+        "cpu_count": cpu_count,
+        "cpu_model": cpu_model,
+        "cpu_cores": ps.get("CoreCount"),
+        "cpu_threads": ps.get("LogicalProcessorCount"),
+        "memory_gib": mem_gib,
     }
     sensors = []
     for t in thermal.get("Temperatures") or []:

@@ -162,6 +162,17 @@ async function api(path, body) {
   return data;
 }
 
+const shortCpu = m => String(m || "").replace(/\((R|TM)\)/g, "").replace(/\s+CPU\b/, "").replace(/\s+/g, " ").trim();
+const fmtGiB = g => g >= 1024 ? (g / 1024).toFixed(g % 1024 ? 1 : 0) + " ТиБ" : Math.round(g * 10) / 10 + " ГиБ";
+const vendorOf = h => h.info?.system?.manufacturer || h.vendor;
+const modelOf = h => h.info?.system?.model || h.product;
+function hwLines(h) {
+  const s = h.info?.system || {}, out = [];
+  if (s.cpu_model) out.push((s.cpu_count ? s.cpu_count + " × " : "") + shortCpu(s.cpu_model));
+  if (s.memory_gib) out.push("ОЗУ " + fmtGiB(s.memory_gib));
+  return out.map(x => `<div class="sub" title="${esc(x)}">${esc(x)}</div>`).join("");
+}
+
 function authCell(i) {
   if (!i) return '<span class="muted">—</span>';
   if (i.completion_code) return `<span class="muted">код 0x${i.completion_code.toString(16)}</span>`;
@@ -184,7 +195,7 @@ function render() {
       <td><span class="dot" title="${h.online ? "в сети" : "не ответил в последнем скане"}"></span><a class="mono" href="https://${esc(h.ip)}/" target="_blank" rel="noopener">${esc(h.ip)}</a><div class="mono sub">${esc(h.mac || "")}</div></td>
       <td><input class="note nm" data-f="name" data-ip="${esc(h.ip)}" value="${esc(h.name)}" maxlength="100" placeholder="название"></td>
       <td><input class="note" data-f="note" data-ip="${esc(h.ip)}" value="${esc(h.note)}" maxlength="500" placeholder="комментарий"></td>
-      <td class="wrapc">${esc(h.vendor || "—")}${h.product ? `<div class="sub">${esc(h.product)}</div>` : ""}</td>
+      <td class="wrapc">${esc(vendorOf(h) || "—")}${modelOf(h) ? `<div class="sub">${esc(modelOf(h))}</div>` : ""}${hwLines(h)}</td>
       <td>${esc(ver)}${rf ? ` <span class="chip" title="Redfish ${esc(rf.version || "")}">Redfish ${esc(rf.version || "")}</span>` : ""}<div class="sub">${authCell(i)}</div></td>
       <td><button class="ghost sm bmcbtn" data-ip="${esc(h.ip)}">${collecting.includes(h.ip) ? "…" : h.info ? esc(h.info.system?.power_state || "данные") : (h.has_creds || defaultCreds) ? "собрать" : "войти"}</button>${h.info_error ? '<div class="bad sub" title="' + esc(h.info_error) + '">ошибка</div>' : ""}</td>
       <td title="Впервые: ${esc(fmt(h.first_seen))}&#10;Последний ответ: ${esc(fmt(h.last_seen))}">${esc(fmtShort(h.last_seen))}</td>
@@ -194,7 +205,7 @@ function render() {
 
   const online = hosts.filter(h => h.online).length;
   const vendors = {};
-  hosts.forEach(h => vendors[h.vendor || "неизвестно"] = (vendors[h.vendor || "неизвестно"] || 0) + 1);
+  hosts.forEach(h => { const v = vendorOf(h) || "неизвестно"; vendors[v] = (vendors[v] || 0) + 1; });
   $("#stats").innerHTML =
     `<div class="stat"><b>${hosts.length}</b><span class="muted">всего BMC</span></div>
      <div class="stat"><b>${online}</b><span class="muted">в сети</span></div>
@@ -236,7 +247,8 @@ function renderDlg() {
     const s = i.system || {}, b = i.bmc || {};
     const rows = [["Производитель", s.manufacturer], ["Модель", s.model], ["Серийный номер", s.serial], ["Партномер", s.part_number],
       ["Имя хоста", s.hostname], ["Питание", s.power_state], ["Состояние", s.health], ["Прошивка BMC", b.firmware], ["BIOS", s.bios_version],
-      ["Процессоры", s.cpu_count ? s.cpu_count + " × " + (s.cpu_model || "") : null], ["Память", s.memory_gib ? s.memory_gib + " ГиБ" : null],
+      ["Процессоры", s.cpu_model ? (s.cpu_count ? s.cpu_count + " × " : "") + shortCpu(s.cpu_model) : null],
+      ["Ядра / потоки", s.cpu_cores ? s.cpu_cores + (s.cpu_threads ? " / " + s.cpu_threads : "") : null], ["Память", s.memory_gib ? fmtGiB(s.memory_gib) : null],
       ["Потребление", i.power_watts != null ? i.power_watts + " Вт" : null]].filter(r => r[1] != null && r[1] !== "");
     html += '<table class="kv">' + rows.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("") + "</table>";
     if (i.sensors && i.sensors.length) html += '<div class="muted" style="margin-bottom:4px">Датчики</div><div class="sensors">' +

@@ -186,6 +186,36 @@ class MediaTest(unittest.TestCase):
         self.assertIsNone(TREE[VM2]["Image"])
 
 
+class HardwareFallbackTest(unittest.TestCase):
+    """На BMC без ProcessorSummary/MemorySummary процессоры и память считаются по модулям."""
+
+    def test_sums_processors_and_dimms(self):
+        tree = {
+            "/redfish/v1/": {"RedfishVersion": "1.0", "Systems": {"@odata.id": "/S"}},
+            "/S": {"Members": [{"@odata.id": "/S/1"}]},
+            "/S/1": {"Model": "DL380", "Processors": {"@odata.id": "/P"}, "Memory": {"@odata.id": "/M"},
+                     "ProcessorSummary": {}, "MemorySummary": {}},
+            "/P": {"Members": [{"@odata.id": "/P/1"}, {"@odata.id": "/P/2"}, {"@odata.id": "/P/3"}]},
+            "/P/1": {"Model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz", "ProcessorType": "CPU"},
+            "/P/2": {"Model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz", "ProcessorType": "CPU"},
+            "/P/3": {"Status": {"State": "Absent"}, "ProcessorType": "CPU"},  # пустой сокет
+            "/M": {"Members": [{"@odata.id": f"/M/{i}"} for i in range(1, 6)]},
+            "/M/1": {"CapacityMiB": 32768}, "/M/2": {"CapacityMiB": 32768},
+            "/M/3": {"CapacityMiB": 32768}, "/M/4": {"CapacityMiB": 32768},
+            "/M/5": {"Status": {"State": "Absent"}, "CapacityMiB": 0},
+        }
+
+        def get(path):
+            if path not in tree:
+                raise bmc.Unavailable("HTTP 404")
+            return tree[path]
+
+        r = bmc.collect_redfish("x", "u", "p", 1, get=get)["system"]
+        self.assertEqual(r["cpu_count"], 2)
+        self.assertIn("E5-2680 v4", r["cpu_model"])
+        self.assertEqual(r["memory_gib"], 128)
+
+
 class IpmitoolParseTest(unittest.TestCase):
     def test_parse_kv_first_wins(self):
         kv = bmc.parse_kv("Product Name          : X11\nProduct Serial : A1\nProduct Name : other\n")
