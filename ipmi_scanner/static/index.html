@@ -29,9 +29,11 @@
   .stat b { font-size: 22px; display: block; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  .sub { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .sub .chip { font-size: 11px; padding: 0 6px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
   th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; cursor: pointer; user-select: none; }
-  td.wrapc { white-space: normal; min-width: 180px; }
+  td.wrapc { white-space: normal; }
   tr.offline td { opacity: .55; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--ok); }
   tr.offline .dot { background: var(--muted); }
@@ -42,6 +44,7 @@
   a { color: var(--accent); text-decoration: none; }
   .note { border: none; border-bottom: 1px dashed var(--line); background: transparent; color: var(--text); font: inherit; width: 100%; min-width: 150px; padding: 3px 2px; }
   .note.nm { font-weight: 600; min-width: 150px; }
+  .note::placeholder { font-weight: 400; color: var(--muted); opacity: .55; }
   .note:focus { outline: 1px solid var(--line); background: var(--bg); }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; width: min(680px, 94vw); padding: 18px; }
   dialog::backdrop { background: rgba(0,0,0,.5); }
@@ -84,11 +87,10 @@
   <div class="panel table-wrap">
     <table>
       <thead><tr>
-        <th data-k="ip">IP</th><th data-k="name">Название</th><th data-k="note">Комментарий</th><th data-k="mac">MAC</th><th data-k="vendor">Производитель</th>
-        <th data-k="product">Модель</th><th>IPMI</th><th>Аутентификация</th><th>Redfish</th>
-        <th>BMC</th><th data-k="last_seen">Последний раз</th><th></th>
+        <th data-k="ip">IP / MAC</th><th data-k="name">Название</th><th data-k="note">Комментарий</th>
+        <th data-k="vendor">Оборудование</th><th>IPMI</th><th>BMC</th><th data-k="last_seen">Опрос</th><th></th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="12" class="muted">Загрузка…</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="8" class="muted">Загрузка…</td></tr></tbody>
     </table>
   </div>
 
@@ -145,6 +147,7 @@
 <script>
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtShort = t => t ? new Date(t * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 const fmt = t => t ? new Date(t * 1000).toLocaleString("ru-RU") : "—";
 let collecting = [], defaultCreds = false, dlgIp = null;
 let hosts = [], sortKey = "ip", sortDir = 1, wasRunning = false;
@@ -178,20 +181,16 @@ function render() {
     const i = h.data.ipmi, rf = h.data.redfish;
     const ver = i && !i.completion_code ? [i.ipmi_v15 && "1.5", i.ipmi_v2 && "2.0"].filter(Boolean).join(" / ") : (i ? "?" : "ASF");
     return `<tr class="${h.online ? "" : "offline"}">
-      <td class="mono"><span class="dot" title="${h.online ? "в сети" : "не ответил в последнем скане"}"></span><a href="https://${esc(h.ip)}/" target="_blank" rel="noopener">${esc(h.ip)}</a></td>
+      <td><span class="dot" title="${h.online ? "в сети" : "не ответил в последнем скане"}"></span><a class="mono" href="https://${esc(h.ip)}/" target="_blank" rel="noopener">${esc(h.ip)}</a><div class="mono sub">${esc(h.mac || "")}</div></td>
       <td><input class="note nm" data-f="name" data-ip="${esc(h.ip)}" value="${esc(h.name)}" maxlength="100" placeholder="название"></td>
       <td><input class="note" data-f="note" data-ip="${esc(h.ip)}" value="${esc(h.note)}" maxlength="500" placeholder="комментарий"></td>
-      <td class="mono">${esc(h.mac || "—")}</td>
-      <td>${esc(h.vendor || "—")}</td>
-      <td>${esc(h.product || "—")}</td>
-      <td>${esc(ver)}</td>
-      <td>${authCell(i)}</td>
-      <td>${rf ? esc(rf.version || "да") : '<span class="muted">—</span>'}</td>
-      <td><button class="ghost sm bmcbtn" data-ip="${esc(h.ip)}">${collecting.includes(h.ip) ? "…" : h.info ? esc(h.info.system?.power_state || "данные") : (h.has_creds || defaultCreds) ? "собрать" : "войти"}</button>${h.info_error ? '<div class="bad" style="font-size:12px" title="' + esc(h.info_error) + '">ошибка</div>' : ""}</td>
-      <td title="Впервые: ${esc(fmt(h.first_seen))}">${esc(fmt(h.last_seen))}</td>
+      <td class="wrapc">${esc(h.vendor || "—")}${h.product ? `<div class="sub">${esc(h.product)}</div>` : ""}</td>
+      <td>${esc(ver)}${rf ? ` <span class="chip" title="Redfish ${esc(rf.version || "")}">Redfish ${esc(rf.version || "")}</span>` : ""}<div class="sub">${authCell(i)}</div></td>
+      <td><button class="ghost sm bmcbtn" data-ip="${esc(h.ip)}">${collecting.includes(h.ip) ? "…" : h.info ? esc(h.info.system?.power_state || "данные") : (h.has_creds || defaultCreds) ? "собрать" : "войти"}</button>${h.info_error ? '<div class="bad sub" title="' + esc(h.info_error) + '">ошибка</div>' : ""}</td>
+      <td title="Впервые: ${esc(fmt(h.first_seen))}&#10;Последний ответ: ${esc(fmt(h.last_seen))}">${esc(fmtShort(h.last_seen))}</td>
       <td><button class="del" data-ip="${esc(h.ip)}" title="Удалить из списка">✕</button></td>
     </tr>`;
-  }).join("") : '<tr><td colspan="12" class="muted">Пока ничего не найдено. Запустите скан.</td></tr>';
+  }).join("") : '<tr><td colspan="8" class="muted">Пока ничего не найдено. Запустите скан.</td></tr>';
 
   const online = hosts.filter(h => h.online).length;
   const vendors = {};
