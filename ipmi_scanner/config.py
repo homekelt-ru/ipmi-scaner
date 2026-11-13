@@ -39,6 +39,7 @@ class IsoConfig:
     dir: str = ""
     port: int = 8624
     listen: str = "0.0.0.0"
+    max_gb: float = 20.0  # лимит размера одного загружаемого образа
     host: str = ""  # адрес сервиса, который увидит BMC; пусто — определить автоматически
 
 
@@ -71,6 +72,7 @@ _ENV = {
     "IPMI_ISO_PORT": ("iso", "port", int),
     "IPMI_ISO_LISTEN": ("iso", "listen", str),
     "IPMI_ISO_HOST": ("iso", "host", str),
+    "IPMI_ISO_MAX_GB": ("iso", "max_gb", float),
     "IPMI_BMC_MAX_PARALLEL": ("bmc", "max_parallel", int),
 }
 

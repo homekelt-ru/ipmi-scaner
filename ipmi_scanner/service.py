@@ -18,9 +18,12 @@ log = logging.getLogger(__name__)
 
 def _local_ip_for(target: str) -> str:
     """Адрес этого сервера в сторону BMC (пакеты не отправляются)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
-        sk.connect((target, 9))
-        return sk.getsockname()[0]
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect((target, 9))
+            return sk.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
 
 
 class ScanService:
@@ -48,8 +51,9 @@ class ScanService:
             creds = (self.cfg.bmc.username, self.cfg.bmc.password)
         return creds
 
-    def iso_url(self, ip: str, name: str) -> str:
-        host = self.cfg.iso.host or _local_ip_for(ip)
+    def iso_url(self, ip: str | None, name: str) -> str:
+        """Ссылка на образ; ip — BMC, для которой строится ссылка (None — маршрут по умолчанию)."""
+        host = self.cfg.iso.host or _local_ip_for(ip or "8.8.8.8")
         return f"http://{host}:{self.cfg.iso.port}/{urllib.parse.quote(name)}"
 
     def media(self, ip: str, op: str, url: str | None, boot_once: bool) -> dict:

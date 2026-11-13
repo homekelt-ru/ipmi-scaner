@@ -6,4 +6,3 @@ deploy/
 **/__pycache__
 *.pyc
 config.toml
-iso/

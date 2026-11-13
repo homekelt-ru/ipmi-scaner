@@ -12,8 +12,6 @@ services:
     env_file: .env
     volumes:
       - ipmi-data:/data
-      # библиотека образов: кладите сюда .iso, BMC скачает их с сервиса
-      - ./iso:/data/iso:ro,z
       # опционально — полный конфиг вместо переменных окружения:
       # - ./config.toml:/app/config.toml:ro
     # command: ["-c", "/app/config.toml", "serve"]

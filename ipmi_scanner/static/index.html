@@ -52,6 +52,8 @@
   .dlg-form select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; min-width: 0; }
   .vm { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
   .vm label { display: block; margin-bottom: 10px; }
+  progress { width: 100%; height: 10px; margin: 6px 0; }
+  .urlin { width: 100%; min-width: 260px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   .sensors { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
   button.sm { padding: 3px 10px; font-size: 13px; }
   #msg { min-height: 1.4em; margin-top: 8px; }
@@ -87,6 +89,20 @@
       </tr></thead>
       <tbody id="rows"><tr><td colspan="12" class="muted">Загрузка…</td></tr></tbody>
     </table>
+  </div>
+
+  <div class="panel" id="isoPanel" hidden>
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <b>Библиотека образов (ISO)</b>
+      <span><input type="file" id="isoUpload" accept=".iso,.img" hidden><button id="isoUploadBtn">Загрузить образ</button></span>
+    </div>
+    <progress id="isoBar" max="100" value="0" hidden></progress>
+    <div id="isoMsg" class="muted" style="min-height:1.4em"></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Файл</th><th>Размер</th><th>Ссылка для BMC (Scripted Media URL)</th><th></th></tr></thead>
+      <tbody id="isoRows"><tr><td colspan="4" class="muted">Образов нет — загрузите ISO.</td></tr></tbody>
+    </table></div>
+    <div class="muted" style="margin-top:6px;font-size:12px">Ссылку можно вставить в iLO/iDRAC вручную либо подключить образ из окна сервера (колонка BMC) — там ссылка подставляется сама.</div>
   </div>
 
   <div class="panel table-wrap">
@@ -248,11 +264,54 @@ async function saveCreds() {
   $("#dlgPass").value = "";
   return true;
 }
+let dlgFiles = [], isoLib = { enabled: false, files: [] };
 async function loadIso() {
-  const r = await api("/api/iso");
-  const files = r.files || [];
+  const r = await api("/api/iso?ip=" + encodeURIComponent(dlgIp || ""));
+  dlgFiles = r.files || [];
   $("#isoFile").innerHTML = '<option value="">' + (r.enabled ? "— образ из библиотеки —" : "библиотека выключена (IPMI_ISO_DIR)") + "</option>" +
-    files.map(f => `<option value="${esc(f.name)}">${esc(f.name)} (${(f.size / 1048576).toFixed(0)} МБ)</option>`).join("");
+    dlgFiles.map(f => `<option value="${esc(f.name)}">${esc(f.name)} (${(f.size / 1048576).toFixed(0)} МБ)</option>`).join("");
+}
+$("#isoFile").onchange = () => { const f = dlgFiles.find(x => x.name === $("#isoFile").value); $("#isoUrl").value = f ? f.url : ""; };
+
+const mb = n => n >= 1073741824 ? (n / 1073741824).toFixed(2) + " ГБ" : (n / 1048576).toFixed(1) + " МБ";
+async function refreshIsoLib() {
+  isoLib = await api("/api/iso");
+  $("#isoPanel").hidden = !isoLib.enabled;
+  $("#isoRows").innerHTML = (isoLib.files || []).length ? isoLib.files.map(f => `<tr>
+    <td class="mono">${esc(f.name)}</td><td>${mb(f.size)}</td>
+    <td class="wrapc"><div class="row" style="flex-wrap:nowrap"><input class="urlin mono" readonly value="${esc(f.url)}"><button class="ghost sm cpy">Копировать</button></div></td>
+    <td><button class="del isodel" data-name="${esc(f.name)}" title="Удалить образ">✕</button></td></tr>`).join("")
+    : '<tr><td colspan="4" class="muted">Образов нет — загрузите ISO.</td></tr>';
+}
+$("#isoRows").addEventListener("click", async e => {
+  const inp = e.target.closest("tr")?.querySelector(".urlin");
+  if (e.target.classList.contains("cpy") && inp) {
+    inp.select();
+    try { await navigator.clipboard.writeText(inp.value); e.target.textContent = "Скопировано"; setTimeout(() => e.target.textContent = "Копировать", 1500); }
+    catch { /* ссылка выделена — Ctrl+C */ }
+  } else if (e.target === inp) inp.select();
+  const b = e.target.closest(".isodel");
+  if (!b) return;
+  if (b.dataset.armed) { const r = await api("/api/iso/delete", { name: b.dataset.name }); $("#isoMsg").textContent = r.ok ? "Образ удалён." : (r.message || r.error || "Ошибка"); refreshIsoLib(); }
+  else { b.dataset.armed = 1; b.textContent = "удалить?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "✕"; }, 3000); }
+});
+$("#isoUploadBtn").onclick = () => $("#isoUpload").click();
+$("#isoUpload").onchange = e => { const f = e.target.files[0]; e.target.value = ""; if (f) uploadIso(f); };
+function uploadIso(f) {
+  const name = f.name.replace(/[^A-Za-z0-9._-]/g, "_");
+  const bar = $("#isoBar"), msg = $("#isoMsg");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/iso/upload?name=" + encodeURIComponent(name));
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  bar.hidden = false; bar.value = 0; $("#isoUploadBtn").disabled = true;
+  const done = text => { bar.hidden = true; $("#isoUploadBtn").disabled = false; msg.textContent = text; refreshIsoLib(); };
+  xhr.upload.onprogress = ev => { if (ev.lengthComputable) { bar.value = ev.loaded * 100 / ev.total; msg.textContent = `Загрузка ${name}: ${mb(ev.loaded)} из ${mb(ev.total)}`; } };
+  xhr.onload = () => {
+    let r = {}; try { r = JSON.parse(xhr.responseText); } catch { }
+    done(xhr.status === 200 ? `Загружено: ${name}. Ссылка готова в таблице ниже.` : (r.message || r.error || "Ошибка загрузки (HTTP " + xhr.status + ")"));
+  };
+  xhr.onerror = () => done("Загрузка прервана (сеть или лимит размера)");
+  xhr.send(f);
 }
 function showMedia(r) {
   const cd = (r.media || []).filter(m => m.types.includes("CD") || m.types.includes("DVD"));
@@ -309,6 +368,7 @@ $("#exportBtn").onclick = async () => {
   catch { $("#msg").textContent = "Не удалось скопировать: используйте GET /api/hosts"; }
 };
 refresh();
+refreshIsoLib();
 setInterval(refresh, 4000);
 </script>
 </body>

@@ -5,12 +5,14 @@ import base64
 import hmac
 import json
 import logging
+import os
 import re
+import shutil
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import isoserver
 from .config import Config
@@ -77,6 +79,69 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
             except ValueError:
                 return None
             return data if isinstance(data, dict) else None
+
+        def _open_ok(self) -> bool:
+            """Изменяющие операции без пароля панели разрешены только на loopback."""
+            if not cfg.web.password and cfg.web.listen not in ("127.0.0.1", "localhost", "::1"):
+                self._json({"error": "Операция отключена: задайте пароль панели (web.password)"}, 403)
+                return False
+            return True
+
+        def _upload(self, query: dict) -> None:
+            """Приём образа потоком: тело запроса — сам файл (application/octet-stream)."""
+            if not self._open_ok():
+                return
+            if not cfg.iso.dir:
+                self._json({"ok": False, "message": "Библиотека образов выключена (IPMI_ISO_DIR)"}, 400)
+                return
+            name = (query.get("name") or [""])[0]
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", name) or not name.lower().endswith(isoserver.EXTS):
+                self._json({"ok": False, "message": "Имя файла: латиница, цифры, . _ - и расширение .iso или .img"}, 400)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0:
+                self._json({"ok": False, "message": "Пустой файл или нет Content-Length"}, 400)
+                return
+            if length > cfg.iso.max_gb * 1024 ** 3:
+                self._json({"ok": False, "message": f"Файл больше лимита {cfg.iso.max_gb:g} ГБ"}, 413)
+                self.close_connection = True
+                return
+            os.makedirs(cfg.iso.dir, exist_ok=True)
+            if shutil.disk_usage(cfg.iso.dir).free < length + 200 * 1024 ** 2:
+                self._json({"ok": False, "message": "Недостаточно места на диске"}, 507)
+                self.close_connection = True
+                return
+            final = os.path.join(cfg.iso.dir, name)
+            if os.path.exists(final):
+                self._json({"ok": False, "message": "Файл с таким именем уже есть — сначала удалите его"}, 409)
+                self.close_connection = True
+                return
+            tmp = os.path.join(cfg.iso.dir, f".{name}.part")
+            got = 0
+            try:
+                with open(tmp, "wb") as f:
+                    while got < length:
+                        chunk = self.rfile.read(min(1024 * 1024, length - got))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                if got != length:
+                    raise OSError("загрузка прервана")
+                os.replace(tmp, final)
+            except OSError as e:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                self.close_connection = True
+                self._json({"ok": False, "message": f"Не удалось сохранить: {e}"}, 500)
+                return
+            log.info("Загружен образ %s (%d байт)", name, length)
+            self._json({"ok": True, "file": {"name": name, "size": length}})
 
         def _creds(self, body: dict) -> None:
             ip = str(body.get("ip", ""))
@@ -147,8 +212,12 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
             elif path == "/api/scans":
                 self._json(storage.scans())
             elif path == "/api/iso":
+                ip = parse_qs(urlparse(self.path).query).get("ip", [None])[0]
+                files = isoserver.list_files(cfg.iso.dir) if cfg.iso.dir else []
+                for f in files:
+                    f["url"] = service.iso_url(ip, f["name"])
                 self._json({"enabled": bool(cfg.iso.dir), "port": cfg.iso.port,
-                            "files": isoserver.list_files(cfg.iso.dir) if cfg.iso.dir else []})
+                            "max_gb": cfg.iso.max_gb, "files": files})
             elif path == "/api/status":
                 self._json({
                     "running": service.running,
@@ -165,7 +234,11 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
         def do_POST(self):
             if not self._guard():
                 return
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path == "/api/iso/upload":
+                self._upload(parse_qs(parsed.query))
+                return
             body = self._body()
             if body is None:
                 self._json({"error": "ожидается JSON"}, 400)
@@ -193,6 +266,16 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                     self._media(body)
                 else:
                     self._collect(body)
+            elif path == "/api/iso/delete":
+                if not self._open_ok():
+                    return
+                name = str(body.get("name", ""))
+                known = {f["name"] for f in isoserver.list_files(cfg.iso.dir)} if cfg.iso.dir else set()
+                if name not in known:
+                    self._json({"ok": False, "message": "Файл не найден"}, 404)
+                    return
+                os.remove(os.path.join(cfg.iso.dir, name))
+                self._json({"ok": True})
             elif path == "/api/delete":
                 ok = storage.delete_host(str(body.get("ip", "")))
                 self._json({"ok": ok}, 200 if ok else 404)

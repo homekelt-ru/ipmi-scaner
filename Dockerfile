@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     IPMI_DATABASE=/data/ipmi.db \
     IPMI_WEB_LISTEN=0.0.0.0 \
     IPMI_WEB_PORT=8623 \
-    IPMI_ISO_DIR=/data/iso \
+    IPMI_ISO_DIR=/data/images \
     IPMI_ISO_PORT=8624
 
 RUN apt-get update \
