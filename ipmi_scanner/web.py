@@ -5,12 +5,14 @@ import base64
 import hmac
 import json
 import logging
+import re
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import isoserver
 from .config import Config
 from .service import ScanService
 from .storage import Storage
@@ -90,6 +92,33 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
             err = storage.set_creds(ip, user.strip(), pwd)
             self._json({"ok": err is None, "message": err or "Сохранено"}, 200 if err is None else 400)
 
+        def _media(self, body: dict) -> None:
+            ip, op = str(body.get("ip", "")), body.get("action")
+            if not storage.host_exists(ip):
+                self._json({"ok": False, "message": "Хост не найден"}, 404)
+                return
+            if op not in ("status", "insert", "eject"):
+                self._json({"ok": False, "message": "action: status | insert | eject"}, 400)
+                return
+            url = None
+            if op == "insert":
+                name, raw = body.get("file"), body.get("url")
+                if name:
+                    known = {f["name"] for f in isoserver.list_files(cfg.iso.dir)} if cfg.iso.dir else set()
+                    if name not in known:
+                        self._json({"ok": False, "message": "Файл не найден в библиотеке образов"}, 400)
+                        return
+                    url = service.iso_url(ip, name)
+                elif isinstance(raw, str) and re.fullmatch(r"https?://[^\s\x00-\x1f]{1,1000}", raw.strip()):
+                    url = raw.strip()
+                else:
+                    self._json({"ok": False, "message": "Укажите файл из библиотеки или URL образа (http/https)"}, 400)
+                    return
+            res = service.media(ip, op, url, bool(body.get("boot_once")))
+            ok = "error" not in res
+            self._json({"ok": ok, "message": res.get("error") or res.get("message", ""),
+                        "media": res.get("media", []), "url": url}, 200 if ok else 502)
+
         def _collect(self, body: dict) -> None:
             if body.get("all"):
                 ips = [h["ip"] for h in storage.hosts()
@@ -117,6 +146,9 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                 self._json(storage.hosts())
             elif path == "/api/scans":
                 self._json(storage.scans())
+            elif path == "/api/iso":
+                self._json({"enabled": bool(cfg.iso.dir), "port": cfg.iso.port,
+                            "files": isoserver.list_files(cfg.iso.dir) if cfg.iso.dir else []})
             elif path == "/api/status":
                 self._json({
                     "running": service.running,
@@ -150,13 +182,15 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
             elif path == "/api/note":
                 ok = storage.set_note(str(body.get("ip", "")), str(body.get("note", "")))
                 self._json({"ok": ok}, 200 if ok else 404)
-            elif path in ("/api/creds", "/api/collect"):
+            elif path in ("/api/creds", "/api/collect", "/api/media"):
                 # без пароля панели принимать пароли BMC можно только на loopback
                 if not cfg.web.password and cfg.web.listen not in ("127.0.0.1", "localhost", "::1"):
                     self._json({"error": "Вход в BMC отключён: задайте пароль панели (web.password)"}, 403)
                     return
                 if path == "/api/creds":
                     self._creds(body)
+                elif path == "/api/media":
+                    self._media(body)
                 else:
                     self._collect(body)
             elif path == "/api/delete":

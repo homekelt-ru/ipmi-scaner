@@ -7,7 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     IPMI_DATABASE=/data/ipmi.db \
     IPMI_WEB_LISTEN=0.0.0.0 \
-    IPMI_WEB_PORT=8623
+    IPMI_WEB_PORT=8623 \
+    IPMI_ISO_DIR=/data/iso \
+    IPMI_ISO_PORT=8624
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ipmitool \
@@ -20,7 +22,7 @@ COPY ipmi_scanner/ ./ipmi_scanner/
 
 USER scanner
 VOLUME ["/data"]
-EXPOSE 8623
+EXPOSE 8623 8624
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD ["python", "-m", "ipmi_scanner.healthcheck"]

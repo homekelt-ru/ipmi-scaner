@@ -72,6 +72,9 @@ def cmd_serve(args, cfg) -> int:
         cfg.web.port = args.port
     storage = Storage(cfg.database)
     service = ScanService(cfg, storage)
+    if cfg.iso.dir:
+        from . import isoserver
+        isoserver.start(cfg.iso)
     threading.Thread(target=service.scheduler_loop, daemon=True).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:

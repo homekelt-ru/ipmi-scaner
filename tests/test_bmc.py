@@ -36,6 +36,13 @@ TREE = {
         "Fans": [{"Name": "FAN1", "Reading": 5400, "ReadingUnits": "RPM"}]},
     "/redfish/v1/Chassis/1/Power": {"PowerControl": [{"PowerConsumedWatts": 212}]},
 }
+VM1, VM2 = "/redfish/v1/Managers/1/VirtualMedia/1", "/redfish/v1/Managers/1/VirtualMedia/2"
+TREE["/redfish/v1/Managers/1"]["VirtualMedia"] = {"@odata.id": "/redfish/v1/Managers/1/VirtualMedia"}
+TREE["/redfish/v1/Managers/1/VirtualMedia"] = {"Members": [{"@odata.id": VM1}, {"@odata.id": VM2}]}
+TREE[VM1] = {"Id": "1", "Name": "Virtual Floppy", "MediaTypes": ["Floppy"], "Image": None, "Inserted": False}
+TREE[VM2] = {"Id": "2", "Name": "Virtual CD", "MediaTypes": ["CD", "DVD"], "Image": None, "Inserted": False,
+             "Actions": {"#VirtualMedia.InsertMedia": {"target": VM2 + "/Actions/VirtualMedia.InsertMedia"},
+                         "#VirtualMedia.EjectMedia": {"target": VM2 + "/Actions/VirtualMedia.EjectMedia"}}}
 USER, PWD = "ADMIN", "s3cret"
 EXPECTED = "Basic " + b64encode(f"{USER}:{PWD}".encode()).decode()
 
@@ -61,6 +68,26 @@ class FakeRedfish(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+
+def _write_handler(self):
+    if self.headers.get("Authorization") != EXPECTED:
+        self.send_response(401); self.send_header("Content-Length", "0"); self.end_headers()
+        return
+    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+    code = 204
+    if self.command == "POST" and self.path == VM2 + "/Actions/VirtualMedia.InsertMedia":
+        TREE[VM2].update(Image=body["Image"], Inserted=True)
+    elif self.command == "POST" and self.path == VM2 + "/Actions/VirtualMedia.EjectMedia":
+        TREE[VM2].update(Image=None, Inserted=False)
+    elif self.command == "PATCH" and self.path == "/redfish/v1/Systems/1":
+        TREE[self.path]["Boot"] = body["Boot"]
+    else:
+        code = 404
+    self.send_response(code); self.send_header("Content-Length", "0"); self.end_headers()
+
+
+FakeRedfish.do_POST = FakeRedfish.do_PATCH = _write_handler
 
 
 class RedfishTest(unittest.TestCase):
@@ -127,6 +154,36 @@ class RedfishTest(unittest.TestCase):
                 return
             time.sleep(0.05)
         raise AssertionError("сбор не завершился")
+
+
+class MediaTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        RedfishTest.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        RedfishTest.tearDownClass.__func__(cls)
+
+    def test_media_flow(self):
+        url = "http://10.0.0.5:8624/os.iso"
+        r = bmc.media(self.host, USER, PWD, "status", timeout=3)
+        cd = [m for m in r["media"] if "CD" in m["types"]][0]
+        self.assertFalse(cd["inserted"])
+        r = bmc.media(self.host, USER, PWD, "insert", url=url, boot_once=True, timeout=3)
+        self.assertNotIn("error", r)
+        cd = [m for m in r["media"] if "CD" in m["types"]][0]
+        self.assertEqual((cd["inserted"], cd["image"]), (True, url))
+        self.assertEqual(TREE["/redfish/v1/Systems/1"]["Boot"]["BootSourceOverrideTarget"], "Cd")
+        self.assertIn("разовая загрузка", r["message"])
+        r = bmc.media(self.host, USER, PWD, "eject", timeout=3)
+        cd = [m for m in r["media"] if "CD" in m["types"]][0]
+        self.assertFalse(cd["inserted"])
+
+    def test_media_wrong_password(self):
+        r = bmc.media(self.host, USER, "bad", "insert", url="http://x/a.iso", timeout=3)
+        self.assertIn("Неверный логин", r["error"])
+        self.assertIsNone(TREE[VM2]["Image"])
 
 
 class IpmitoolParseTest(unittest.TestCase):

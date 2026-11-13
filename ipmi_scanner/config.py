@@ -34,10 +34,20 @@ class BmcConfig:
 
 
 @dataclass
+class IsoConfig:
+    # библиотека образов; BMC скачивает их с этого сервиса по HTTP. Пусто — выключено
+    dir: str = ""
+    port: int = 8624
+    listen: str = "0.0.0.0"
+    host: str = ""  # адрес сервиса, который увидит BMC; пусто — определить автоматически
+
+
+@dataclass
 class Config:
     scan: ScanConfig = field(default_factory=ScanConfig)
     web: WebConfig = field(default_factory=WebConfig)
     bmc: BmcConfig = field(default_factory=BmcConfig)
+    iso: IsoConfig = field(default_factory=IsoConfig)
     database: str = "./data/ipmi.db"
 
 
@@ -57,6 +67,10 @@ _ENV = {
     "IPMI_BMC_USERNAME": ("bmc", "username", str),
     "IPMI_BMC_PASSWORD": ("bmc", "password", str),
     "IPMI_BMC_TIMEOUT": ("bmc", "timeout", float),
+    "IPMI_ISO_DIR": ("iso", "dir", str),
+    "IPMI_ISO_PORT": ("iso", "port", int),
+    "IPMI_ISO_LISTEN": ("iso", "listen", str),
+    "IPMI_ISO_HOST": ("iso", "host", str),
     "IPMI_BMC_MAX_PARALLEL": ("bmc", "max_parallel", int),
 }
 
@@ -75,6 +89,9 @@ def load(path: str | None) -> Config:
         for k, v in raw.get("bmc", {}).items():
             if hasattr(cfg.bmc, k):
                 setattr(cfg.bmc, k, v)
+        for k, v in raw.get("iso", {}).items():
+            if hasattr(cfg.iso, k):
+                setattr(cfg.iso, k, v)
         cfg.database = raw.get("storage", {}).get("database", cfg.database)
     for env, (section, key, conv) in _ENV.items():
         val = os.environ.get(env)

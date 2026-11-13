@@ -49,6 +49,9 @@
   .dlg-form input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; min-width: 0; }
   .dlg-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .kv { width: 100%; margin-bottom: 10px; } .kv td { padding: 4px 8px 4px 0; white-space: normal; border: none; } .kv td:first-child { color: var(--muted); width: 38%; }
+  .dlg-form select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; min-width: 0; }
+  .vm { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+  .vm label { display: block; margin-bottom: 10px; }
   .sensors { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
   button.sm { padding: 3px 10px; font-size: 13px; }
   #msg { min-height: 1.4em; margin-top: 8px; }
@@ -105,6 +108,20 @@
     <button class="ghost" id="dlgClose">Закрыть</button>
   </div>
   <div id="dlgMsg" class="muted" style="min-height:1.4em"></div>
+  <div id="isoBox" class="vm" hidden>
+    <div class="muted" style="margin-bottom:6px">Виртуальный CD/DVD</div>
+    <div id="vmStatus" style="margin-bottom:8px;min-height:1.4em"></div>
+    <div class="dlg-form">
+      <select id="isoFile"><option value="">— образ из библиотеки —</option></select>
+      <input id="isoUrl" type="text" placeholder="или URL: http://host/os.iso" autocomplete="off" spellcheck="false">
+    </div>
+    <label><input type="checkbox" id="isoBoot"> Загрузиться с образа при следующей перезагрузке</label>
+    <div class="dlg-actions">
+      <button id="isoInsert">Подключить</button>
+      <button class="ghost" id="isoEject">Отключить</button>
+      <button class="ghost" id="isoStatus">Статус</button>
+    </div>
+  </div>
   <div id="dlgInfo"></div>
 </dialog>
 
@@ -194,6 +211,7 @@ async function refresh() {
 function renderDlg() {
   if (!dlgIp) return;
   const h = hosts.find(x => x.ip === dlgIp); if (!h) return;
+  $("#isoBox").hidden = !(h.has_creds || defaultCreds);
   let html = "";
   if (h.info_error) html += `<div class="bad" style="margin-bottom:8px">${esc(h.info_error)}</div>`;
   if (collecting.includes(dlgIp)) html += '<div class="muted">Собираю данные…</div>';
@@ -219,15 +237,43 @@ function openDlg(ip) {
   $("#dlgPass").value = "";
   $("#dlgPass").placeholder = h.has_creds ? "сохранён — оставьте пустым" : (defaultCreds ? "пусто — стандартный" : "пароль");
   $("#dlgMsg").textContent = "";
-  renderDlg(); $("#dlg").showModal();
+  $("#vmStatus").textContent = ""; $("#isoUrl").value = ""; $("#isoBoot").checked = false;
+  loadIso(); renderDlg(); $("#dlg").showModal();
 }
-$("#dlgGo").onclick = async () => {
+async function saveCreds() {
   const user = $("#dlgUser").value.trim();
-  if (user) {
-    const r = await api("/api/creds", { ip: dlgIp, username: user, password: $("#dlgPass").value });
-    if (!r.ok) { $("#dlgMsg").textContent = r.message || "Ошибка"; return; }
-    $("#dlgPass").value = "";
-  }
+  if (!user) return true;
+  const r = await api("/api/creds", { ip: dlgIp, username: user, password: $("#dlgPass").value });
+  if (!r.ok) { $("#dlgMsg").textContent = r.message || "Ошибка"; return false; }
+  $("#dlgPass").value = "";
+  return true;
+}
+async function loadIso() {
+  const r = await api("/api/iso");
+  const files = r.files || [];
+  $("#isoFile").innerHTML = '<option value="">' + (r.enabled ? "— образ из библиотеки —" : "библиотека выключена (IPMI_ISO_DIR)") + "</option>" +
+    files.map(f => `<option value="${esc(f.name)}">${esc(f.name)} (${(f.size / 1048576).toFixed(0)} МБ)</option>`).join("");
+}
+function showMedia(r) {
+  const cd = (r.media || []).filter(m => m.types.includes("CD") || m.types.includes("DVD"));
+  $("#vmStatus").innerHTML = (r.ok ? "" : `<div class="bad">${esc(r.message || "Ошибка")}</div>`) +
+    (r.ok && r.message ? `<div>${esc(r.message)}</div>` : "") +
+    cd.map(m => `<div class="muted">${esc(m.name || "CD/DVD")}: ${m.inserted ? "подключён " + esc(m.image || "") : "не подключён"}</div>`).join("");
+}
+async function mediaCall(body) {
+  if (!(await saveCreds())) return;
+  $("#vmStatus").textContent = "Выполняю…";
+  showMedia(await api("/api/media", { ip: dlgIp, ...body }));
+}
+$("#isoStatus").onclick = () => mediaCall({ action: "status" });
+$("#isoEject").onclick = () => mediaCall({ action: "eject" });
+$("#isoInsert").onclick = () => {
+  const file = $("#isoFile").value, url = $("#isoUrl").value.trim();
+  if (!file && !url) { $("#vmStatus").innerHTML = '<div class="bad">Выберите образ или укажите URL</div>'; return; }
+  mediaCall({ action: "insert", file: url ? null : file, url: url || null, boot_once: $("#isoBoot").checked });
+};
+$("#dlgGo").onclick = async () => {
+  if (!(await saveCreds())) return;
   const r = await api("/api/collect", { ip: dlgIp });
   $("#dlgMsg").textContent = r.message || ""; refresh();
 };

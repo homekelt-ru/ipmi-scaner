@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
+import urllib.parse
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,6 +14,13 @@ from .config import Config
 from .storage import Storage
 
 log = logging.getLogger(__name__)
+
+
+def _local_ip_for(target: str) -> str:
+    """Адрес этого сервера в сторону BMC (пакеты не отправляются)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+        sk.connect((target, 9))
+        return sk.getsockname()[0]
 
 
 class ScanService:
@@ -33,6 +42,23 @@ class ScanService:
     def has_default_creds(self) -> bool:
         return bool(self.cfg.bmc.username and self.cfg.bmc.password)
 
+    def creds_for(self, ip: str) -> tuple[str, str] | None:
+        creds = self.storage.get_creds(ip)
+        if not creds and self.has_default_creds():
+            creds = (self.cfg.bmc.username, self.cfg.bmc.password)
+        return creds
+
+    def iso_url(self, ip: str, name: str) -> str:
+        host = self.cfg.iso.host or _local_ip_for(ip)
+        return f"http://{host}:{self.cfg.iso.port}/{urllib.parse.quote(name)}"
+
+    def media(self, ip: str, op: str, url: str | None, boot_once: bool) -> dict:
+        creds = self.creds_for(ip)
+        if not creds:
+            return {"error": "Не заданы логин и пароль"}
+        log.info("Виртуальный носитель %s: %s %s", ip, op, url or "")
+        return bmc.media(ip, creds[0], creds[1], op, url, boot_once, timeout=self.cfg.bmc.timeout)
+
     def collect_async(self, ips: list[str]) -> tuple[bool, str]:
         """Сбор данных с BMC в фоне: по одной попытке входа на каждый."""
         with self._clock:
@@ -50,9 +76,7 @@ class ScanService:
 
     def _collect_one(self, ip: str) -> None:
         try:
-            creds = self.storage.get_creds(ip)
-            if not creds and self.has_default_creds():
-                creds = (self.cfg.bmc.username, self.cfg.bmc.password)
+            creds = self.creds_for(ip)
             if not creds:
                 self.storage.set_info(ip, None, "Не заданы логин и пароль")
                 return

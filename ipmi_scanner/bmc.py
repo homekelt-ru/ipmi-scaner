@@ -35,23 +35,48 @@ class Unavailable(Exception):
 
 # ---------------------------------------------------------------- Redfish
 
-def _rf_get(host: str, path: str, auth: str, timeout: float) -> dict:
+def _err_detail(e: urllib.error.HTTPError) -> str:
+    """Текст ошибки из тела ответа Redfish (если есть)."""
+    try:
+        err = (json.loads(e.read(64 * 1024)) or {}).get("error") or {}
+        ext = err.get("@Message.ExtendedInfo") or []
+        if ext and isinstance(ext[0], dict) and ext[0].get("Message"):
+            return str(ext[0]["Message"])[:300]
+        return str(err.get("message") or "")[:300]
+    except Exception:
+        return ""
+
+
+def _rf_call(host: str, method: str, path: str, auth: str, timeout: float, body: dict | None = None) -> dict:
+    data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(
-        f"{SCHEME}://{host}{path}",
-        headers={"Accept": "application/json", "Authorization": auth, "User-Agent": "ipmi-scanner"},
+        f"{SCHEME}://{host}{path}", data=data, method=method,
+        headers={"Accept": "application/json", "Content-Type": "application/json",
+                 "Authorization": auth, "User-Agent": "ipmi-scanner"},
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_CTX) as r:
-            data = json.loads(r.read(2 * 1024 * 1024))
+            raw = r.read(2 * 1024 * 1024)
     except urllib.error.HTTPError as e:
         if e.code == 401:
             raise AuthError() from None
-        raise Unavailable(f"HTTP {e.code}") from None
+        detail = _err_detail(e)
+        raise Unavailable(f"HTTP {e.code}" + (f": {detail}" if detail else "")) from None
     except Exception as e:
         raise Unavailable(str(e) or type(e).__name__) from None
-    if not isinstance(data, dict):
+    if not raw.strip():
+        return {}
+    try:
+        out = json.loads(raw)
+    except ValueError:
+        raise Unavailable("неожиданный ответ") from None
+    if not isinstance(out, dict):
         raise Unavailable("неожиданный ответ")
-    return data
+    return out
+
+
+def _rf_get(host: str, path: str, auth: str, timeout: float) -> dict:
+    return _rf_call(host, "GET", path, auth, timeout)
 
 
 def _link(d: dict, key: str) -> str | None:
@@ -227,3 +252,79 @@ def collect(host: str, username: str, password: str, timeout: float = 15.0) -> d
         return {"error": f"Redfish: {rf_err}; IPMI: {e}"}
     except Exception as e:
         return {"error": f"Redfish: {rf_err}; IPMI: {type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------- виртуальные носители
+
+def _vm_summary(d: dict) -> dict:
+    return {
+        "id": d.get("Id"), "name": d.get("Name"), "types": d.get("MediaTypes") or [],
+        "inserted": bool(d.get("Inserted")) or bool(d.get("Image")), "image": d.get("Image"),
+    }
+
+
+def _media(host: str, username: str, password: str, op: str, url: str | None,
+           boot_once: bool, timeout: float) -> dict:
+    auth = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+    get = lambda p: _rf_call(host, "GET", p, auth, timeout)  # noqa: E731
+    send = lambda m, p, b: _rf_call(host, m, p, auth, timeout, b)  # noqa: E731
+
+    root = get("/redfish/v1/")
+    mgr = _first_member(get, _link(root, "Managers") or "/redfish/v1/Managers")
+    vm_path = _link(mgr, "VirtualMedia")
+    if not vm_path:
+        raise Unavailable("этот BMC не поддерживает виртуальные носители через Redfish")
+
+    def load() -> list[dict]:
+        items = []
+        for m in get(vm_path).get("Members") or []:
+            path = m.get("@odata.id") if isinstance(m, dict) else None
+            if path:
+                d = get(path)
+                d["_path"] = path
+                items.append(d)
+        return items
+
+    items = load()
+    cd = next((d for d in items if {"CD", "DVD"} & set(d.get("MediaTypes") or [])), None)
+    if op != "status" and cd is None:
+        raise Unavailable("у BMC нет виртуального CD/DVD")
+    message = ""
+    if op == "insert":
+        target = ((cd.get("Actions") or {}).get("#VirtualMedia.InsertMedia") or {}).get("target")
+        if target:
+            send("POST", target, {"Image": url})
+        else:  # старые реализации (например iLO 4): образ задаётся через PATCH
+            send("PATCH", cd["_path"], {"Image": url, "Inserted": True})
+        message = "Образ подключён"
+        if boot_once:
+            try:
+                sysd = _first_member(get, _link(root, "Systems") or "/redfish/v1/Systems")
+                send("PATCH", sysd.get("@odata.id") or "/redfish/v1/Systems/1",
+                     {"Boot": {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once"}})
+                message += ", разовая загрузка с CD включена (перезагрузите сервер)"
+            except Unavailable as e:
+                message += f", но разовую загрузку включить не удалось: {e}"
+    elif op == "eject":
+        target = ((cd.get("Actions") or {}).get("#VirtualMedia.EjectMedia") or {}).get("target")
+        if target:
+            send("POST", target, {})
+        else:
+            send("PATCH", cd["_path"], {"Image": None})
+        message = "Образ отключён"
+    if op != "status":
+        items = load()
+    return {"message": message, "media": [_vm_summary(d) for d in items]}
+
+
+def media(host: str, username: str, password: str, op: str, url: str | None = None,
+          boot_once: bool = False, timeout: float = 20.0) -> dict:
+    """op: status | insert | eject. Возвращает {"media": [...], "message"} либо {"error"}."""
+    try:
+        return _media(host, username, password, op, url, boot_once, timeout)
+    except AuthError:
+        return {"error": "Неверный логин или пароль"}
+    except Unavailable as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
