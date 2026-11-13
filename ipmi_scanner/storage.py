@@ -55,7 +55,8 @@ class Storage:
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(hosts)")}
-        for name, ddl in (("info", "TEXT"), ("info_at", "REAL"), ("info_error", "TEXT")):
+        for name, ddl in (("info", "TEXT"), ("info_at", "REAL"), ("info_error", "TEXT"),
+                          ("name", "TEXT NOT NULL DEFAULT ''")):
             if name not in cols:
                 self.db.execute(f"ALTER TABLE hosts ADD COLUMN {name} {ddl}")
         self.db.commit()
@@ -85,14 +86,14 @@ class Storage:
                     if not exists:
                         new += 1
                     self.db.execute(
-                        """INSERT INTO hosts (ip, mac, vendor, product, data, warnings, online, first_seen, last_seen)
-                           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        """INSERT INTO hosts (ip, mac, vendor, product, data, online, first_seen, last_seen)
+                           VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                            ON CONFLICT(ip) DO UPDATE SET
                              mac=COALESCE(excluded.mac, hosts.mac), vendor=COALESCE(excluded.vendor, hosts.vendor),
                              product=COALESCE(excluded.product, hosts.product), data=excluded.data,
-                             warnings=excluded.warnings, online=1, last_seen=excluded.last_seen""",
+                             online=1, last_seen=excluded.last_seen""",
                         (h.ip, h.mac, h.vendor, h.product, json.dumps(d, ensure_ascii=False),
-                         json.dumps(h.warnings, ensure_ascii=False), now, now),
+                         now, now),
                     )
                 # хосты из просканированных сетей, которые не ответили, — offline
                 for row in self.db.execute("SELECT ip FROM hosts WHERE online=1").fetchall():
@@ -114,16 +115,24 @@ class Storage:
         for r in rows:
             d = dict(r)
             d["data"] = json.loads(d["data"])
-            d["warnings"] = json.loads(d["warnings"])
+            d.pop("warnings", None)
             d["info"] = json.loads(d["info"]) if d["info"] else None
             d["has_creds"] = bool(d["has_creds"])
             out.append(d)
         out.sort(key=lambda h: _ip_key(h["ip"]))
         return out
 
-    def set_note(self, ip: str, note: str) -> bool:
+    def set_meta(self, ip: str, name: str | None = None, note: str | None = None) -> bool:
+        """Название и комментарий сервера; None — поле не менять."""
+        sets, args = [], []
+        if name is not None:
+            sets.append("name=?"); args.append(name.strip()[:100])
+        if note is not None:
+            sets.append("note=?"); args.append(note.strip()[:500])
         with self._lock:
-            cur = self.db.execute("UPDATE hosts SET note=? WHERE ip=?", (note[:500], ip))
+            if not sets:
+                return self.db.execute("SELECT 1 FROM hosts WHERE ip=?", (ip,)).fetchone() is not None
+            cur = self.db.execute(f"UPDATE hosts SET {', '.join(sets)} WHERE ip=?", (*args, ip))
             self.db.commit()
             return cur.rowcount > 0
 

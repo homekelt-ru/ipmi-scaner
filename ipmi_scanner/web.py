@@ -257,7 +257,9 @@ def make_handler(cfg: Config, storage: Storage, service: ScanService):
                 ok, msg = service.start_async(targets or None)
                 self._json({"ok": ok, "message": msg}, 200 if ok else 409)
             elif path == "/api/note":
-                ok = storage.set_note(str(body.get("ip", "")), str(body.get("note", "")))
+                name, note = body.get("name"), body.get("note")
+                ok = storage.set_meta(str(body.get("ip", "")), name if isinstance(name, str) else None,
+                                      note if isinstance(note, str) else None)
                 self._json({"ok": ok}, 200 if ok else 404)
             elif path in ("/api/creds", "/api/collect", "/api/media"):
                 # без пароля панели принимать пароли BMC можно только на loopback

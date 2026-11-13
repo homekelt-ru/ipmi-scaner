@@ -33,7 +33,6 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(c.ipmi_v15)
         self.assertFalse(c.ipmi_v2)
         self.assertTrue(c.anonymous_login and c.null_usernames)
-        self.assertIn("Включён анонимный вход", scanner.security_warnings(c))
 
     def test_parse_error(self):
         _, c = protocol.parse_response(auth_cap_response(cc=0xCC))
@@ -79,7 +78,24 @@ class ScanTest(unittest.TestCase):
             res = scanner.scan(["127.0.0.1"], timeout=0.5, port=bmc.port)
         self.assertEqual(res[0].ipmi.completion_code, 0)
         self.assertFalse(res[0].ipmi.ipmi_v2)
-        self.assertIn("Только IPMI 1.5", res[0].warnings)
+
+    def test_name_and_note(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = Storage(os.path.join(d, "t.db"))
+            with FakeBMC() as bmc:
+                res = scanner.scan(["127.0.0.1"], timeout=0.3, port=bmc.port)
+            sid = st.start_scan(["127.0.0.1"])
+            st.finish_scan(sid, ["127.0.0.1"], res)
+            self.assertTrue(st.set_meta("127.0.0.1", name="  Стойка 3, DB-1 "))
+            self.assertTrue(st.set_meta("127.0.0.1", note="диск заменён"))
+            h = st.hosts()[0]
+            self.assertEqual((h["name"], h["note"]), ("Стойка 3, DB-1", "диск заменён"))
+            self.assertNotIn("warnings", h)
+            self.assertFalse(st.set_meta("9.9.9.9", name="x"))
+            sid = st.start_scan(["127.0.0.1"])  # повторный скан не стирает название и комментарий
+            st.finish_scan(sid, ["127.0.0.1"], res)
+            h = st.hosts()[0]
+            self.assertEqual((h["name"], h["note"]), ("Стойка 3, DB-1", "диск заменён"))
 
     def test_storage_online_offline(self):
         with tempfile.TemporaryDirectory() as d:

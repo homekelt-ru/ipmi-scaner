@@ -40,7 +40,8 @@
   .bad { color: var(--bad); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
   a { color: var(--accent); text-decoration: none; }
-  .note { border: none; background: transparent; color: var(--text); font: inherit; width: 100%; min-width: 120px; padding: 2px 0; }
+  .note { border: none; border-bottom: 1px dashed var(--line); background: transparent; color: var(--text); font: inherit; width: 100%; min-width: 150px; padding: 3px 2px; }
+  .note.nm { font-weight: 600; min-width: 150px; }
   .note:focus { outline: 1px solid var(--line); background: var(--bg); }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; width: min(680px, 94vw); padding: 18px; }
   dialog::backdrop { background: rgba(0,0,0,.5); }
@@ -83,9 +84,9 @@
   <div class="panel table-wrap">
     <table>
       <thead><tr>
-        <th data-k="ip">IP</th><th data-k="mac">MAC</th><th data-k="vendor">Производитель</th>
+        <th data-k="ip">IP</th><th data-k="name">Название</th><th data-k="note">Комментарий</th><th data-k="mac">MAC</th><th data-k="vendor">Производитель</th>
         <th data-k="product">Модель</th><th>IPMI</th><th>Аутентификация</th><th>Redfish</th>
-        <th>Предупреждения</th><th>BMC</th><th data-k="last_seen">Последний раз</th><th>Заметка</th><th></th>
+        <th>BMC</th><th data-k="last_seen">Последний раз</th><th></th>
       </tr></thead>
       <tbody id="rows"><tr><td colspan="12" class="muted">Загрузка…</td></tr></tbody>
     </table>
@@ -178,28 +179,26 @@ function render() {
     const ver = i && !i.completion_code ? [i.ipmi_v15 && "1.5", i.ipmi_v2 && "2.0"].filter(Boolean).join(" / ") : (i ? "?" : "ASF");
     return `<tr class="${h.online ? "" : "offline"}">
       <td class="mono"><span class="dot" title="${h.online ? "в сети" : "не ответил в последнем скане"}"></span><a href="https://${esc(h.ip)}/" target="_blank" rel="noopener">${esc(h.ip)}</a></td>
+      <td><input class="note nm" data-f="name" data-ip="${esc(h.ip)}" value="${esc(h.name)}" maxlength="100" placeholder="название"></td>
+      <td><input class="note" data-f="note" data-ip="${esc(h.ip)}" value="${esc(h.note)}" maxlength="500" placeholder="комментарий"></td>
       <td class="mono">${esc(h.mac || "—")}</td>
       <td>${esc(h.vendor || "—")}</td>
       <td>${esc(h.product || "—")}</td>
       <td>${esc(ver)}</td>
       <td>${authCell(i)}</td>
       <td>${rf ? esc(rf.version || "да") : '<span class="muted">—</span>'}</td>
-      <td class="wrapc">${h.warnings.length ? h.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join("") : '<span class="muted">—</span>'}</td>
       <td><button class="ghost sm bmcbtn" data-ip="${esc(h.ip)}">${collecting.includes(h.ip) ? "…" : h.info ? esc(h.info.system?.power_state || "данные") : (h.has_creds || defaultCreds) ? "собрать" : "войти"}</button>${h.info_error ? '<div class="bad" style="font-size:12px" title="' + esc(h.info_error) + '">ошибка</div>' : ""}</td>
       <td title="Впервые: ${esc(fmt(h.first_seen))}">${esc(fmt(h.last_seen))}</td>
-      <td><input class="note" data-ip="${esc(h.ip)}" value="${esc(h.note)}" placeholder="…"></td>
       <td><button class="del" data-ip="${esc(h.ip)}" title="Удалить из списка">✕</button></td>
     </tr>`;
   }).join("") : '<tr><td colspan="12" class="muted">Пока ничего не найдено. Запустите скан.</td></tr>';
 
   const online = hosts.filter(h => h.online).length;
-  const warn = hosts.filter(h => h.warnings.length).length;
   const vendors = {};
   hosts.forEach(h => vendors[h.vendor || "неизвестно"] = (vendors[h.vendor || "неизвестно"] || 0) + 1);
   $("#stats").innerHTML =
     `<div class="stat"><b>${hosts.length}</b><span class="muted">всего BMC</span></div>
      <div class="stat"><b>${online}</b><span class="muted">в сети</span></div>
-     <div class="stat"><b class="${warn ? "warn" : ""}">${warn}</b><span class="muted">с предупреждениями</span></div>
      <div class="stat"><span class="muted">По производителям:</span><div>${Object.entries(vendors).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span class="chip">${esc(k)}: ${v}</span>`).join("")}</div></div>`;
 }
 
@@ -207,7 +206,9 @@ async function refresh() {
   const [st, h, sc] = await Promise.all([api("/api/status"), api("/api/hosts"), api("/api/scans")]);
   hosts = Array.isArray(h) ? h : [];
   collecting = st.collecting || []; defaultCreds = !!st.default_creds;
-  render(); renderDlg();
+  const ed = document.activeElement;
+  if (!(ed && ed.classList && ed.classList.contains("note"))) render();  // не затирать поле, которое сейчас редактируют
+  renderDlg();
   const r = st.running;
   $("#scanBtn").disabled = !!r;
   $("#status").textContent = r
@@ -248,7 +249,7 @@ function renderDlg() {
 function openDlg(ip) {
   const h = hosts.find(x => x.ip === ip); if (!h) return;
   dlgIp = ip;
-  $("#dlgTitle").textContent = "BMC " + ip;
+  $("#dlgTitle").textContent = "BMC " + ip + (h.name ? " — " + h.name : "");
   $("#dlgUser").value = h.bmc_user || "";
   $("#dlgPass").value = "";
   $("#dlgPass").placeholder = h.has_creds ? "сохранён — оставьте пустым" : (defaultCreds ? "пусто — стандартный" : "пароль");
@@ -349,8 +350,13 @@ $("#scanBtn").onclick = async () => {
   $("#msg").textContent = r.message || "";
   refresh();
 };
+$("#rows").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.classList.contains("note")) e.target.blur(); });
 $("#rows").addEventListener("change", e => {
-  if (e.target.classList.contains("note")) api("/api/note", { ip: e.target.dataset.ip, note: e.target.value });
+  if (e.target.classList.contains("note")) {
+    const { ip, f } = e.target.dataset, h = hosts.find(x => x.ip === ip);
+    if (h) h[f] = e.target.value;
+    api("/api/note", { ip, [f]: e.target.value });
+  }
 });
 $("#rows").addEventListener("click", async e => {
   const b = e.target.closest(".del");
@@ -362,9 +368,9 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
   const k = th.dataset.k; sortDir = sortKey === k ? -sortDir : 1; sortKey = k; render();
 });
 $("#exportBtn").onclick = async () => {
-  const cols = ["ip", "mac", "vendor", "product", "online", "last_seen", "note"];
-  const csv = [cols.concat("warnings").join(",")].concat(hosts.map(h =>
-    cols.map(c => `"${String(c === "last_seen" ? fmt(h[c]) : h[c] ?? "").replace(/"/g, '""')}"`).concat(`"${h.warnings.join("; ")}"`).join(","))).join("\n");
+  const cols = ["ip", "name", "note", "mac", "vendor", "product", "online", "last_seen"];
+  const csv = [cols.join(",")].concat(hosts.map(h =>
+    cols.map(c => `"${String(c === "last_seen" ? fmt(h[c]) : h[c] ?? "").replace(/"/g, '""')}"`).join(","))).join("\n");
   try { await navigator.clipboard.writeText(csv); $("#msg").textContent = "CSV скопирован в буфер обмена."; }
   catch { $("#msg").textContent = "Не удалось скопировать: используйте GET /api/hosts"; }
 };

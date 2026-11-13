@@ -78,7 +78,6 @@ class HostResult:
     redfish: dict | None = None
     vendor: str | None = None
     product: str | None = None
-    warnings: list[str] = field(default_factory=list)
 
     def finalize(self) -> None:
         rf = self.redfish or {}
@@ -88,7 +87,6 @@ class HostResult:
             or (protocol.vendor_by_iana(self.asf.enterprise) if self.asf else None)
         )
         self.product = rf.get("product")
-        self.warnings = security_warnings(self.ipmi)
 
     def to_dict(self) -> dict:
         return {
@@ -99,27 +97,7 @@ class HostResult:
             "ipmi": self.ipmi.to_dict() if self.ipmi else None,
             "asf": self.asf.to_dict() if self.asf else None,
             "redfish": self.redfish,
-            "warnings": self.warnings,
         }
-
-
-def security_warnings(caps: protocol.AuthCapabilities | None) -> list[str]:
-    if not caps or caps.completion_code != 0:
-        return []
-    w = []
-    if caps.anonymous_login:
-        w.append("Включён анонимный вход")
-    if caps.null_usernames:
-        w.append("Разрешены пустые имена пользователей")
-    if caps.auth_none:
-        w.append("Разрешена аутентификация NONE")
-    if caps.auth_password:
-        w.append("Разрешён пароль открытым текстом (straight password)")
-    if caps.auth_md2:
-        w.append("Разрешён MD2")
-    if caps.ipmi_v15 and not caps.ipmi_v2:
-        w.append("Только IPMI 1.5")
-    return w
 
 
 def read_arp_table() -> dict[str, str]:

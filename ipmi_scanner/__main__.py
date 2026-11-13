@@ -36,7 +36,7 @@ def cmd_scan(args, cfg) -> int:
     if not results:
         print("BMC не найдены.")
         return 0
-    print(f"{'IP':<16} {'MAC':<18} {'IPMI':<9} {'Производитель':<18} {'Модель':<24} Предупреждения")
+    print(f"{'IP':<16} {'MAC':<18} {'IPMI':<9} {'Производитель':<18} {'Модель':<24}")
     for r in results:
         i = r.ipmi
         if i and i.completion_code == 0:
@@ -44,7 +44,7 @@ def cmd_scan(args, cfg) -> int:
         else:
             ver = "ASF" if not i else f"cc={i.completion_code:#x}"
         print(f"{r.ip:<16} {r.mac or '-':<18} {ver:<9} {(r.vendor or '-')[:18]:<18} "
-              f"{(r.product or '-')[:24]:<24} {'; '.join(r.warnings) or '-'}")
+              f"{(r.product or '-')[:24]}")
     print(f"\nНайдено: {len(results)}")
     return 0
 
